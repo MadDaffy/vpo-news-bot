@@ -8,3 +8,6 @@ target/
 *.iws
 *.iml
 *.ipr
+# Скрываем реальный конфиг с токеном, но оставляем шаблон
+src/main/resources/application.properties
+!src/main/resources/application.properties.example
