@@ -36,20 +36,28 @@ public class Parser {
     public List<NewsPost> parse(String keywords) {
         List<NewsPost> allNews = new ArrayList<>();
 
-        // Проходим по всем источникам
         for (String url : rssUrls) {
             try {
                 HttpGet request = new HttpGet(url);
                 HttpResponse response = httpClient.execute(request);
+                int statusCode = response.getStatusLine().getStatusCode();
+                if (statusCode != 200) {
+                    log.warn("RSS-лента вернула код {}: {}", statusCode, url);
+                    continue;
+                }
                 String xml = EntityUtils.toString(response.getEntity());
 
                 RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
+                if (wrapper == null || wrapper.getChannel() == null) {
+                    log.warn("Не удалось найти <channel> в RSS-ленте: {}", url);
+                    continue;
+                }
                 List<NewsPost> items = wrapper.getChannel().getItems();
                 if (items != null) {
                     allNews.addAll(items);
                 }
             } catch (IOException e) {
-                log.error("Error fetching RSS from {}", url, e);
+                log.error("Ошибка при получении или разборе RSS {}: {}", url, e.getMessage());
             }
         }
 
@@ -57,7 +65,6 @@ public class Parser {
             return new ArrayList<>();
         }
 
-        // Фильтрация по ключевым словам
         String[] words = keywords.toLowerCase().split("[,\\s]+");
         return allNews.stream()
                 .filter(news -> {

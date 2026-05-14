@@ -11,7 +11,6 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import jakarta.annotation.PostConstruct;
-
 import java.util.List;
 
 @Slf4j
@@ -21,16 +20,17 @@ public class VpoBot extends TelegramLongPollingBot {
     private final String botName;
     private final String botToken;
     private final Parser parser;
+    private final List<Long> allowedUsers;
 
-    // Внедряем значения из application.properties
     public VpoBot(@Value("${bot.name}") String botName,
                   @Value("${bot.token}") String botToken,
+                  @Value("${bot.allowed-users}") List<Long> allowedUsers,
                   Parser parser) {
         this.botName = botName;
         this.botToken = botToken;
+        this.allowedUsers = allowedUsers;
         this.parser = parser;
     }
-
 
     @PostConstruct
     public void init() {
@@ -55,28 +55,49 @@ public class VpoBot extends TelegramLongPollingBot {
 
     @Override
     public void onUpdateReceived(Update update) {
-        if (update.hasMessage() && update.getMessage().hasText()) {
-            String chatId = update.getMessage().getChatId().toString();
-            String messageText = update.getMessage().getText();
+        if (!update.hasMessage() || !update.getMessage().hasText()) {
+            return;
+        }
 
-            if (messageText.equals("/start")) {
-                sendTextMessage(chatId, "Привет! Я бот для поиска новостей по ключевым словам. Введи запрос.");
-                return;
-            }
+        Long userId = update.getMessage().getFrom().getId();
+        String chatId = update.getMessage().getChatId().toString();
+        String messageText = update.getMessage().getText();
 
-            // Вызываем парсер
-            List<NewsPost> news = parser.parse(messageText);
-            if (news.isEmpty()) {
-                sendTextMessage(chatId, "По вашему запросу \"" + messageText + "\" ничего не найдено.");
-            } else {
-                StringBuilder response = new StringBuilder("🔹 Найдено " + news.size() + " новостей:\n\n");
-                for (int i = 0; i < Math.min(5, news.size()); i++) {
-                    NewsPost post = news.get(i);
-                    response.append(i + 1).append(". ").append(post.getTitle())
-                            .append("\n").append(post.getLink()).append("\n\n");
-                }
-                sendTextMessage(chatId, response.toString());
+
+        // Проверка белого списка
+        if (!allowedUsers.contains(userId)) {
+            log.warn("Unauthorized access attempt: user={} (ID={}), message={}",
+                    update.getMessage().getFrom().getUserName(),
+                    userId,
+                    messageText);
+            sendTextMessage(chatId, "Извините, у вас нет доступа к этому боту.");
+            return;
+        }
+
+        // Сообщения от белого списка
+        log.info("User request: userName={} (ID={}), query={}",
+                update.getMessage().getFrom().getUserName(),
+                userId,
+                messageText);
+
+        // Обработка команд
+        if (messageText.equals("/start")) {
+            sendTextMessage(chatId, "Привет! Я бот для поиска новостей по ключевым словам. Введи запрос.");
+            return;
+        }
+
+        // Поиск новостей
+        List<NewsPost> news = parser.parse(messageText);
+        if (news.isEmpty()) {
+            sendTextMessage(chatId, "По вашему запросу \"" + messageText + "\" ничего не найдено.");
+        } else {
+            StringBuilder response = new StringBuilder("🔹 Найдено " + news.size() + " новостей:\n\n");
+            for (int i = 0; i < Math.min(5, news.size()); i++) {
+                NewsPost post = news.get(i);
+                response.append(i + 1).append(". ").append(post.getTitle())
+                        .append("\n").append(post.getLink()).append("\n\n");
             }
+            sendTextMessage(chatId, response.toString());
         }
     }
 

@@ -11,3 +11,5 @@ target/
 # Скрываем реальный конфиг с токеном, но оставляем шаблон
 src/main/resources/application.properties
 !src/main/resources/application.properties.example
+# Логи приложения
+logs/
