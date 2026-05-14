@@ -24,47 +24,53 @@ public class Parser {
 
     private final HttpClient httpClient;
     private final XmlMapper xmlMapper;
+    private final List<String> rssUrls;
 
-    @Value("${rss.url}")
-    private String rssUrl;
-
-    public Parser() {
+    // Внедряем список адресов
+    public Parser(@Value("${rss.urls}") List<String> rssUrls) {
         this.httpClient = HttpClients.createDefault();
         this.xmlMapper = new XmlMapper();
+        this.rssUrls = rssUrls;
     }
 
     public List<NewsPost> parse(String keywords) {
-        try {
-            HttpGet request = new HttpGet(rssUrl);
-            HttpResponse response = httpClient.execute(request);
-            String xml = EntityUtils.toString(response.getEntity());
+        List<NewsPost> allNews = new ArrayList<>();
 
-            RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
-            List<NewsPost> allNews = wrapper.getChannel().getItems();
+        // Проходим по всем источникам
+        for (String url : rssUrls) {
+            try {
+                HttpGet request = new HttpGet(url);
+                HttpResponse response = httpClient.execute(request);
+                String xml = EntityUtils.toString(response.getEntity());
 
-            if (allNews == null) {
-                log.warn("No items found in RSS feed");
-                return new ArrayList<>();
+                RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
+                List<NewsPost> items = wrapper.getChannel().getItems();
+                if (items != null) {
+                    allNews.addAll(items);
+                }
+            } catch (IOException e) {
+                log.error("Error fetching RSS from {}", url, e);
             }
+        }
 
-            String[] words = keywords.toLowerCase().split("[,\\s]+");
-            return allNews.stream()
-                    .filter(news -> {
-                        String title = news.getTitle() != null ? news.getTitle().toLowerCase() : "";
-                        String desc = news.getDescription() != null ? news.getDescription().toLowerCase() : "";
-                        for (String word : words) {
-                            if (!word.isEmpty() && (title.contains(word) || desc.contains(word))) {
-                                return true;
-                            }
-                        }
-                        return false;
-                    })
-                    .collect(Collectors.toList());
-
-        } catch (IOException e) {
-            log.error("Error parsing RSS feed", e);
+        if (allNews.isEmpty()) {
             return new ArrayList<>();
         }
+
+        // Фильтрация по ключевым словам
+        String[] words = keywords.toLowerCase().split("[,\\s]+");
+        return allNews.stream()
+                .filter(news -> {
+                    String title = news.getTitle() != null ? news.getTitle().toLowerCase() : "";
+                    String desc = news.getDescription() != null ? news.getDescription().toLowerCase() : "";
+                    for (String word : words) {
+                        if (!word.isEmpty() && (title.contains(word) || desc.contains(word))) {
+                            return true;
+                        }
+                    }
+                    return false;
+                })
+                .collect(Collectors.toList());
     }
 
     @lombok.Data
