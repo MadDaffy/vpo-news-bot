@@ -7,8 +7,10 @@ import com.fasterxml.jackson.dataformat.xml.annotation.JacksonXmlProperty;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
+import org.apache.http.client.config.RequestConfig;
 import org.apache.http.client.methods.HttpGet;
-import org.apache.http.impl.client.HttpClients;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.impl.client.StandardHttpRequestRetryHandler;
 import org.apache.http.util.EntityUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -19,7 +21,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 
 /**
- * Парсер RSS-лент. Загружает новости и умеет фильтровать по набору ключевых слов.
+ * Парсер RSS-лент. Загружает новости и умеет искать:
+ * - по полной фразе (точный поиск)
+ * - по набору ключевых слов (расширенный поиск)
  */
 @Slf4j
 @Component
@@ -32,7 +36,14 @@ public class Parser {
     private List<String> rssUrls;
 
     public Parser() {
-        this.httpClient = HttpClients.createDefault();
+        RequestConfig config = RequestConfig.custom()
+                .setConnectTimeout(10_000)
+                .setSocketTimeout(15_000)
+                .build();
+        this.httpClient = HttpClientBuilder.create()
+                .setDefaultRequestConfig(config)
+                .setRetryHandler(new StandardHttpRequestRetryHandler(3, true))
+                .build();
         this.xmlMapper = new XmlMapper();
     }
 
@@ -59,12 +70,26 @@ public class Parser {
     }
 
     /**
-     * Фильтрует новости по набору ключевых слов (поиск по подстроке без учёта регистра).
-     *
-     * @param keywords строка с ключевыми словами, разделёнными пробелами или запятыми
-     * @return список новостей, содержащих хотя бы одно из ключевых слов
+     * Ищет новости, содержащие ПОЛНУЮ строку (точное совпадение фразы).
      */
-    public List<NewsPost> parse(String keywords) {
+    public List<NewsPost> searchExactPhrase(String phrase) {
+        List<NewsPost> allNews = getAllNews();
+        if (allNews.isEmpty()) return new ArrayList<>();
+
+        String lowerPhrase = phrase.toLowerCase();
+        return allNews.stream()
+                .filter(n -> {
+                    String t = n.getTitle() != null ? n.getTitle().toLowerCase() : "";
+                    String d = n.getDescription() != null ? n.getDescription().toLowerCase() : "";
+                    return t.contains(lowerPhrase) || d.contains(lowerPhrase);
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Ищет новости, содержащие ХОТЯ БЫ ОДНО из ключевых слов (по подстроке).
+     */
+    public List<NewsPost> searchByKeywords(String keywords) {
         List<NewsPost> allNews = getAllNews();
         if (allNews.isEmpty()) return new ArrayList<>();
 
@@ -81,8 +106,6 @@ public class Parser {
                 .collect(Collectors.toList());
     }
 
-    // Вспомогательные классы для десериализации RSS 2.0
-
     @lombok.Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class RssWrapper {
@@ -93,7 +116,7 @@ public class Parser {
     @lombok.Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Channel {
-        @JacksonXmlElementWrapper(useWrapping = false) // элементы <item> идут сразу внутри <channel>
+        @JacksonXmlElementWrapper(useWrapping = false)
         @JacksonXmlProperty(localName = "item")
         private List<NewsPost> items;
     }
