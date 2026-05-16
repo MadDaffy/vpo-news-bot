@@ -18,67 +18,70 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
+/**
+ * Парсер RSS-лент. Загружает новости и умеет фильтровать по набору ключевых слов.
+ */
 @Slf4j
 @Component
 public class Parser {
 
     private final HttpClient httpClient;
     private final XmlMapper xmlMapper;
-    private final List<String> rssUrls;
 
-    // Внедряем список адресов
-    public Parser(@Value("${rss.urls}") List<String> rssUrls) {
+    @Value("${rss.urls}")
+    private List<String> rssUrls;
+
+    public Parser() {
         this.httpClient = HttpClients.createDefault();
         this.xmlMapper = new XmlMapper();
-        this.rssUrls = rssUrls;
     }
 
-    public List<NewsPost> parse(String keywords) {
+    /**
+     * Загружает ВСЕ новости из всех RSS-лент без фильтрации.
+     */
+    public List<NewsPost> getAllNews() {
         List<NewsPost> allNews = new ArrayList<>();
-
         for (String url : rssUrls) {
             try {
                 HttpGet request = new HttpGet(url);
                 HttpResponse response = httpClient.execute(request);
-                int statusCode = response.getStatusLine().getStatusCode();
-                if (statusCode != 200) {
-                    log.warn("RSS-лента вернула код {}: {}", statusCode, url);
-                    continue;
-                }
-                String xml = EntityUtils.toString(response.getEntity());
-
+                if (response.getStatusLine().getStatusCode() != 200) continue;
+                String xml = EntityUtils.toString(response.getEntity(), "UTF-8");
                 RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
-                if (wrapper == null || wrapper.getChannel() == null) {
-                    log.warn("Не удалось найти <channel> в RSS-ленте: {}", url);
-                    continue;
-                }
-                List<NewsPost> items = wrapper.getChannel().getItems();
-                if (items != null) {
-                    allNews.addAll(items);
+                if (wrapper != null && wrapper.getChannel() != null && wrapper.getChannel().getItems() != null) {
+                    allNews.addAll(wrapper.getChannel().getItems());
                 }
             } catch (IOException e) {
-                log.error("Ошибка при получении или разборе RSS {}: {}", url, e.getMessage());
+                log.error("Ошибка парсинга {}: {}", url, e.getMessage());
             }
         }
+        return allNews;
+    }
 
-        if (allNews.isEmpty()) {
-            return new ArrayList<>();
-        }
+    /**
+     * Фильтрует новости по набору ключевых слов (поиск по подстроке без учёта регистра).
+     *
+     * @param keywords строка с ключевыми словами, разделёнными пробелами или запятыми
+     * @return список новостей, содержащих хотя бы одно из ключевых слов
+     */
+    public List<NewsPost> parse(String keywords) {
+        List<NewsPost> allNews = getAllNews();
+        if (allNews.isEmpty()) return new ArrayList<>();
 
         String[] words = keywords.toLowerCase().split("[,\\s]+");
         return allNews.stream()
-                .filter(news -> {
-                    String title = news.getTitle() != null ? news.getTitle().toLowerCase() : "";
-                    String desc = news.getDescription() != null ? news.getDescription().toLowerCase() : "";
-                    for (String word : words) {
-                        if (!word.isEmpty() && (title.contains(word) || desc.contains(word))) {
-                            return true;
-                        }
+                .filter(n -> {
+                    String t = n.getTitle() != null ? n.getTitle().toLowerCase() : "";
+                    String d = n.getDescription() != null ? n.getDescription().toLowerCase() : "";
+                    for (String w : words) {
+                        if (!w.isEmpty() && (t.contains(w) || d.contains(w))) return true;
                     }
                     return false;
                 })
                 .collect(Collectors.toList());
     }
+
+    // Вспомогательные классы для десериализации RSS 2.0
 
     @lombok.Data
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -90,7 +93,7 @@ public class Parser {
     @lombok.Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class Channel {
-        @JacksonXmlElementWrapper(useWrapping = false)
+        @JacksonXmlElementWrapper(useWrapping = false) // элементы <item> идут сразу внутри <channel>
         @JacksonXmlProperty(localName = "item")
         private List<NewsPost> items;
     }

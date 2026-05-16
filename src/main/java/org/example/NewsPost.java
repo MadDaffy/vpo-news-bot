@@ -7,6 +7,9 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+/**
+ * Модель одной новости из RSS-ленты.
+ */
 @Data
 @NoArgsConstructor
 @AllArgsConstructor

@@ -14,6 +14,17 @@ import jakarta.annotation.PostConstruct;
 import java.util.*;
 import java.util.stream.Collectors;
 
+/**
+ * Telegram-бот с гибридным AI-поиском новостей.
+ * <p>
+ * Логика:
+ * <ol>
+ *   <li>Пользователь отправляет запрос (слово, фразу или предложение).</li>
+ *   <li>AI генерирует словоформы и основы знаменательных слов (через {@link AiService#expandQuery}).</li>
+ *   <li>Парсер ищет новости, содержащие любую из этих фраз (по подстроке).</li>
+ *   <li>Результаты сортируются: сначала точные совпадения с исходным запросом, затем остальные.</li>
+ * </ol>
+ */
 @Slf4j
 @Component
 public class VpoBot extends TelegramLongPollingBot {
@@ -36,6 +47,9 @@ public class VpoBot extends TelegramLongPollingBot {
         this.aiService = aiService;
     }
 
+    /**
+     * Инициализация: регистрация бота в Telegram API.
+     */
     @PostConstruct
     public void init() {
         try {
@@ -53,6 +67,9 @@ public class VpoBot extends TelegramLongPollingBot {
     @Override
     public String getBotToken() { return botToken; }
 
+    /**
+     * Обработчик входящих сообщений.
+     */
     @Override
     public void onUpdateReceived(Update update) {
         if (!update.hasMessage() || !update.getMessage().hasText()) return;
@@ -61,6 +78,7 @@ public class VpoBot extends TelegramLongPollingBot {
         String chatId = update.getMessage().getChatId().toString();
         String messageText = update.getMessage().getText();
 
+        // Проверка белого списка
         if (!allowedUsers.contains(userId)) {
             sendTextMessage(chatId, "⛔ Доступ запрещён.");
             return;
@@ -106,7 +124,7 @@ public class VpoBot extends TelegramLongPollingBot {
         List<NewsPost> sortedNews = new ArrayList<>(exactMatches);
         sortedNews.addAll(otherNews);
 
-        // Шаг 4: выводим результат
+        // Шаг 4: формируем ответ с учётом лимита Telegram (4096 символов)
         StringBuilder response = new StringBuilder("🔹 Найдено " + sortedNews.size() + " новостей:\n\n");
         int shown = 0, maxLength = 4000;
         for (NewsPost post : sortedNews) {
@@ -122,6 +140,9 @@ public class VpoBot extends TelegramLongPollingBot {
         sendTextMessage(chatId, response.toString());
     }
 
+    /**
+     * Отправляет текстовое сообщение в чат.
+     */
     private void sendTextMessage(String chatId, String text) {
         SendMessage message = new SendMessage();
         message.setChatId(chatId);
