@@ -11,7 +11,8 @@ import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import jakarta.annotation.PostConstruct;
-import java.util.List;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Component
@@ -19,17 +20,20 @@ public class VpoBot extends TelegramLongPollingBot {
 
     private final String botName;
     private final String botToken;
-    private final Parser parser;
     private final List<Long> allowedUsers;
+    private final Parser parser;
+    private final AiService aiService;
 
     public VpoBot(@Value("${bot.name}") String botName,
                   @Value("${bot.token}") String botToken,
                   @Value("${bot.allowed-users}") List<Long> allowedUsers,
-                  Parser parser) {
+                  Parser parser,
+                  AiService aiService) {
         this.botName = botName;
         this.botToken = botToken;
         this.allowedUsers = allowedUsers;
         this.parser = parser;
+        this.aiService = aiService;
     }
 
     @PostConstruct
@@ -44,61 +48,78 @@ public class VpoBot extends TelegramLongPollingBot {
     }
 
     @Override
-    public String getBotUsername() {
-        return botName;
-    }
+    public String getBotUsername() { return botName; }
 
     @Override
-    public String getBotToken() {
-        return botToken;
-    }
+    public String getBotToken() { return botToken; }
 
     @Override
     public void onUpdateReceived(Update update) {
-        if (!update.hasMessage() || !update.getMessage().hasText()) {
-            return;
-        }
+        if (!update.hasMessage() || !update.getMessage().hasText()) return;
 
         Long userId = update.getMessage().getFrom().getId();
         String chatId = update.getMessage().getChatId().toString();
         String messageText = update.getMessage().getText();
 
-
-        // Проверка белого списка
         if (!allowedUsers.contains(userId)) {
-            log.warn("Unauthorized access attempt: user={} (ID={}), message={}",
-                    update.getMessage().getFrom().getUserName(),
-                    userId,
-                    messageText);
-            sendTextMessage(chatId, "Извините, у вас нет доступа к этому боту.");
+            sendTextMessage(chatId, "⛔ Доступ запрещён.");
             return;
         }
 
-        // Сообщения от белого списка
         log.info("User request: userName={} (ID={}), query={}",
-                update.getMessage().getFrom().getUserName(),
-                userId,
-                messageText);
+                update.getMessage().getFrom().getUserName(), userId, messageText);
 
-        // Обработка команд
         if (messageText.equals("/start")) {
-            sendTextMessage(chatId, "Привет! Я бот для поиска новостей по ключевым словам. Введи запрос.");
+            sendTextMessage(chatId, "Привет! Я бот для поиска новостей.\n\n" +
+                    "🔹 Просто отправь слово или фразу — я найду подходящие новости.\n" +
+                    "🔹 Я понимаю склонения, синонимы и перефразы.");
             return;
         }
 
-        // Поиск новостей
-        List<NewsPost> news = parser.parse(messageText);
-        if (news.isEmpty()) {
-            sendTextMessage(chatId, "По вашему запросу \"" + messageText + "\" ничего не найдено.");
-        } else {
-            StringBuilder response = new StringBuilder("🔹 Найдено " + news.size() + " новостей:\n\n");
-            for (int i = 0; i < Math.min(5, news.size()); i++) {
-                NewsPost post = news.get(i);
-                response.append(i + 1).append(". ").append(post.getTitle())
-                        .append("\n").append(post.getLink()).append("\n\n");
-            }
-            sendTextMessage(chatId, response.toString());
+        // Шаг 1: расширяем запрос через LLM
+        sendTextMessage(chatId, "⏳ Ищу новости...");
+        List<String> searchPhrases = aiService.expandQuery(messageText);
+        log.info("Search phrases: {}", searchPhrases);
+
+        // Шаг 2: ищем новости по всем фразам
+        String combinedKeywords = String.join(" ", searchPhrases);
+        List<NewsPost> allNews = parser.parse(combinedKeywords);
+
+        if (allNews.isEmpty()) {
+            sendTextMessage(chatId, "По запросу \"" + messageText + "\" ничего не найдено.");
+            return;
         }
+
+        // Шаг 3: сортируем — точные совпадения с исходным запросом выше
+        List<NewsPost> exactMatches = allNews.stream()
+                .filter(n -> {
+                    String t = n.getTitle() != null ? n.getTitle().toLowerCase() : "";
+                    String d = n.getDescription() != null ? n.getDescription().toLowerCase() : "";
+                    return t.contains(messageText.toLowerCase()) || d.contains(messageText.toLowerCase());
+                })
+                .collect(Collectors.toList());
+
+        List<NewsPost> otherNews = allNews.stream()
+                .filter(n -> !exactMatches.contains(n))
+                .collect(Collectors.toList());
+
+        List<NewsPost> sortedNews = new ArrayList<>(exactMatches);
+        sortedNews.addAll(otherNews);
+
+        // Шаг 4: выводим результат
+        StringBuilder response = new StringBuilder("🔹 Найдено " + sortedNews.size() + " новостей:\n\n");
+        int shown = 0, maxLength = 4000;
+        for (NewsPost post : sortedNews) {
+            String entry = (shown + 1) + ". " + post.getTitle() + "\n" + post.getLink() + "\n\n";
+            if (response.length() + entry.length() > maxLength) break;
+            response.append(entry);
+            shown++;
+        }
+        if (shown < sortedNews.size()) {
+            response.append("Показано ").append(shown).append(" из ").append(sortedNews.size()).append(".\n");
+        }
+
+        sendTextMessage(chatId, response.toString());
     }
 
     private void sendTextMessage(String chatId, String text) {

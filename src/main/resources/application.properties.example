@@ -1,4 +1,25 @@
 bot.name=VPO_check_bot
 bot.token=ВАШ_ТОКЕН
 
-rss.urls=https://ria.ru/export/rss2/archive/index.xml,https://lenta.ru/rss,https://www.interfax.ru/rss.asp
+rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
+        https://lenta.ru/rss,\
+        https://www.interfax.ru/rss.asp,\
+        https://russian.rt.com/rss,\
+        https://www.mk.ru/rss/index.xml,\
+        https://rg.ru/xml/index.xml,\
+        https://www.vedomosti.ru/rss/news
+
+#Для цветного логгирования от белых списков в консоль
+spring.output.ansi.enabled=always
+
+# ==========================================
+# Логирование в файл
+# ==========================================
+logging.file.name=logs/bot.log
+logging.file.max-size=10MB
+logging.file.max-history=7
+
+# Ollama модели
+ollama.api.url=http://localhost:11434
+ollama.model=gemma4:e2b
+#ollama.embed.model=nomic-embed-text не заработало как нужно с русским языком
