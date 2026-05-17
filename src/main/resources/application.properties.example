@@ -14,7 +14,6 @@ rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
         https://www.oreanda-news.com/rss01/rss01.txt,\
         https://www.opennet.ru/opennews/opennews_all_noadv.rss,\
         https://eadaily.com/ru/rss/index.xml,\
-        https://belta.by/rss/,\
         https://tass.ru/rss/v2.xml,\
         https://regnum.ru/rss,\
         https://news.rambler.ru/rss/USA/,\
