@@ -57,7 +57,18 @@ public class Parser {
                 HttpGet request = new HttpGet(url);
                 HttpResponse response = httpClient.execute(request);
                 if (response.getStatusLine().getStatusCode() != 200) continue;
-                String xml = EntityUtils.toString(response.getEntity(), "UTF-8");
+
+                // Определяем кодировку из Content-Type
+                String charset = "UTF-8";
+                if (response.getEntity().getContentType() != null) {
+                    String contentType = response.getEntity().getContentType().getValue();
+                    String[] parts = contentType.split("charset=");
+                    if (parts.length > 1) {
+                        charset = parts[1].trim();
+                    }
+                }
+
+                String xml = EntityUtils.toString(response.getEntity(), charset);
                 RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
                 if (wrapper != null && wrapper.getChannel() != null && wrapper.getChannel().getItems() != null) {
                     allNews.addAll(wrapper.getChannel().getItems());

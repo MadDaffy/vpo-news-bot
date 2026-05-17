@@ -1,4 +1,4 @@
-bot.name=VPO_check_bot
+bot.name=ВАШ_БОТ
 bot.token=ВАШ_ТОКЕН
 
 rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
@@ -12,7 +12,17 @@ rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
         https://www.aa.com.tr/ru/rss/default?cat=live,\
         https://aif.ru/rss/news.php,\
         https://www.oreanda-news.com/rss01/rss01.txt,\
-        https://www.opennet.ru/opennews/opennews_all_noadv.rss
+        https://www.opennet.ru/opennews/opennews_all_noadv.rss,\
+        https://eadaily.com/ru/rss/index.xml,\
+        https://belta.by/rss/,\
+        https://tass.ru/rss/v2.xml,\
+        https://regnum.ru/rss,\
+        https://news.rambler.ru/rss/USA/,\
+        https://news.rambler.ru/rss/TRNC/,\
+        https://news.rambler.ru/rss/Serbia/,\
+        https://news.rambler.ru/rss/Syria/,\
+        https://news.rambler.ru/rss/Slovakia/,\
+        https://news.rambler.ru/rss/Slovenia/
 
 
 #Для цветного логгирования от белых списков в консоль
