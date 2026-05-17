@@ -1,40 +1,15 @@
-bot.name=ВАШ_БОТ
-bot.token=ВАШ_ТОКЕН
+# Пример файла конфигурации.
+# Перед запуском замените значения или установите переменные окружения.
+bot.name=(ИМЯ ВАШЕГО БОТА)
+bot.token=${BOT_TOKEN}
+bot.allowed-users=${ALLOWED_USERS}
 
-rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
-        https://lenta.ru/rss,\
-        https://www.interfax.ru/rss.asp,\
-        https://russian.rt.com/rss,\
-        https://www.mk.ru/rss/index.xml,\
-        https://rg.ru/xml/index.xml,\
-        https://www.vedomosti.ru/rss/news,\
-        https://www.kommersant.ru/rss/news.xml,\
-        https://www.aa.com.tr/ru/rss/default?cat=live,\
-        https://aif.ru/rss/news.php,\
-        https://www.oreanda-news.com/rss01/rss01.txt,\
-        https://www.opennet.ru/opennews/opennews_all_noadv.rss,\
-        https://eadaily.com/ru/rss/index.xml,\
-        https://tass.ru/rss/v2.xml,\
-        https://regnum.ru/rss,\
-        https://news.rambler.ru/rss/USA/,\
-        https://news.rambler.ru/rss/TRNC/,\
-        https://news.rambler.ru/rss/Serbia/,\
-        https://news.rambler.ru/rss/Syria/,\
-        https://news.rambler.ru/rss/Slovakia/,\
-        https://news.rambler.ru/rss/Slovenia/
+rss.urls=... (ваш список RSS)
 
+ollama.api.url=http://localhost:11434
+ollama.model=${OLLAMA_MODEL:qwen2.5:1.5b}
 
-#Для цветного логгирования от белых списков в консоль
-spring.output.ansi.enabled=always
-
-# ==========================================
-# Логирование в файл
-# ==========================================
 logging.file.name=logs/bot.log
 logging.file.max-size=10MB
 logging.file.max-history=7
-
-# Ollama модели
-ollama.api.url=http://localhost:11434
-ollama.model=gemma4:e2b
-#ollama.embed.model=nomic-embed-text не заработало как нужно с русским языком
+spring.output.ansi.enabled=always

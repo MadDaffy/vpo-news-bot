@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.CloseableHttpClient;
@@ -43,15 +44,40 @@ public class AiService {
     }
 
     /**
-     * Генерирует словоформы и основы только для знаменательных слов.
-     * Защищён от prompt injection: экранирует кавычки и удаляет токены разметки.
+     * Проверяет, доступна ли Ollama и загружена ли модель.
+     * @return true, если сервис здоров
      */
+    public boolean isAvailable() {
+        try {
+            HttpGet get = new HttpGet(apiUrl + "/api/tags");
+            String response = httpClient.execute(get, httpResponse -> {
+                if (httpResponse.getStatusLine().getStatusCode() != 200) return null;
+                return EntityUtils.toString(httpResponse.getEntity());
+            });
+            if (response == null) return false;
+            JsonNode root = objectMapper.readTree(response);
+            JsonNode models = root.get("models");
+            if (models != null && models.isArray()) {
+                for (JsonNode m : models) {
+                    if (model.equals(m.get("name").asText())) {
+                        return true;
+                    }
+                }
+            }
+            log.warn("Model {} not found in Ollama", model);
+            return false;
+        } catch (IOException e) {
+            log.error("Ollama health check failed", e);
+            return false;
+        }
+    }
+
+    // ... (остальные методы expandQuery, chat) полностью из предыдущей версии
     public List<String> expandQuery(String userQuery) {
-        // Защита от prompt injection
         String safeQuery = userQuery
-                .replace("\"", "\\\"")               // экранируем кавычки
-                .replace("<|", "")                  // удаляем открывающие токены
-                .replace("|>", "");                 // удаляем закрывающие токены
+                .replace("\"", "\\\"")
+                .replace("<|", "")
+                .replace("|>", "");
 
         String prompt = String.format(
                 "<|turn|>system\n" +
