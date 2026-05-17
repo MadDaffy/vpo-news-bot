@@ -114,6 +114,10 @@ public class VpoBot extends TelegramLongPollingBot {
         String messageText = update.getMessage().getText();
 
         if (!allowedUsers.contains(userId)) {
+            log.warn("Unauthorized access attempt: user={} (ID={}), message={}",
+                    update.getMessage().getFrom().getUserName(),
+                    userId,
+                    messageText);
             sendTextMessage(chatId, "⛔ Доступ запрещён.");
             return;
         }

@@ -7,7 +7,13 @@ rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
         https://russian.rt.com/rss,\
         https://www.mk.ru/rss/index.xml,\
         https://rg.ru/xml/index.xml,\
-        https://www.vedomosti.ru/rss/news
+        https://www.vedomosti.ru/rss/news,\
+        https://www.kommersant.ru/rss/news.xml,\
+        https://www.aa.com.tr/ru/rss/default?cat=live,\
+        https://aif.ru/rss/news.php,\
+        https://www.oreanda-news.com/rss01/rss01.txt,\
+        https://www.opennet.ru/opennews/opennews_all_noadv.rss
+
 
 #Для цветного логгирования от белых списков в консоль
 spring.output.ansi.enabled=always
