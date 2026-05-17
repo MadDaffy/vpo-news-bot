@@ -36,6 +36,7 @@ import java.util.stream.Collectors;
  *   <li>Обычный запрос — точный поиск фразы.</li>
  *   <li>Кнопка «Расширить с ИИ» — LLM генерирует словоформы, парсер ищет по ним.</li>
  *   <li>Кнопки ❤️/👎 — запрос комментария, сохранение в файлы логов с данными пользователя.</li>
+ *   <li>Сортировка результатов: по убыванию количества совпавших слов из запроса.</li>
  * </ul>
  */
 @Slf4j
@@ -211,6 +212,9 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
+        // Сортируем по количеству совпадений слов
+        news = rankByWordMatch(news, query);
+
         exactSearchResult.put(chatId, new ArrayList<>(news));
         sendNewsList(chatId, news);
     }
@@ -240,7 +244,47 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
+        // Сортируем по количеству совпадений слов (используем исходный запрос + сгенерированные словоформы)
+        allNews = rankByWordMatch(allNews, combinedKeywords);
+
         sendNewsList(chatId, allNews);
+    }
+
+    /**
+     * Сортирует новости по убыванию количества слов из запроса, найденных в заголовке и описании.
+     */
+    private List<NewsPost> rankByWordMatch(List<NewsPost> news, String keywords) {
+        // Разбиваем запрос на слова (токены)
+        String[] queryWords = keywords.toLowerCase().split("[,\\s]+");
+
+        // Создаём копию списка, чтобы не мутировать исходный
+        List<NewsPost> sorted = new ArrayList<>(news);
+
+        // Сортируем по количеству совпадений (чем больше, тем выше)
+        sorted.sort((a, b) -> {
+            int scoreA = countMatches(a, queryWords);
+            int scoreB = countMatches(b, queryWords);
+            return Integer.compare(scoreB, scoreA); // по убыванию
+        });
+
+        return sorted;
+    }
+
+    /**
+     * Считает, сколько слов из queryWords встречается в заголовке или описании новости.
+     */
+    private int countMatches(NewsPost post, String[] queryWords) {
+        String title = post.getTitle() != null ? post.getTitle().toLowerCase() : "";
+        String desc = post.getDescription() != null ? post.getDescription().toLowerCase() : "";
+        String combined = title + " " + desc;
+
+        int matches = 0;
+        for (String word : queryWords) {
+            if (!word.isEmpty() && combined.contains(word)) {
+                matches++;
+            }
+        }
+        return matches;
     }
 
     private void sendNewsList(String chatId, List<NewsPost> newsList) {
