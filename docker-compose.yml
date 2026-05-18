@@ -14,7 +14,7 @@ services:
       - |
         ollama serve &
         sleep 5
-        ollama pull gemma4:e2b
+        ollama pull qwen2.5:1.5b
         wait
 
   # Сервис бота
