@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  # Сервис Ollama - языковая модель
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    entrypoint: [ "/bin/sh", "-c" ]
+    command:
+      - |
+        ollama serve &
+        sleep 5
+        ollama pull gemma4:e2b
+        wait
+
+  # Сервис бота
+  bot:
+    build: .
+    network_mode: host                # <-- используем сеть хоста напрямую
+    depends_on:
+      - ollama
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ALLOWED_USERS=${ALLOWED_USERS}
+      - OLLAMA_API_URL=http://localhost:11434   # <-- теперь Ollama доступна через localhost
+    volumes:
+      - ./logs:/app/logs
+    restart: unless-stopped
+
+volumes:
+  ollama_data:
