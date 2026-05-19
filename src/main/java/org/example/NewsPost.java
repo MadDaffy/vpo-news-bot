@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 @NoArgsConstructor
 @AllArgsConstructor
 @JacksonXmlRootElement(localName = "item")
-@JsonIgnoreProperties(ignoreUnknown = true)
+@JsonIgnoreProperties(ignoreUnknown = true) // игнорируем непредусмотренные поля (guid, enclosure и т.д.)
 public class NewsPost {
 
     @JacksonXmlProperty(localName = "title")

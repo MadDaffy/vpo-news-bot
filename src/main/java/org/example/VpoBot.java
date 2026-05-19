@@ -13,11 +13,6 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
-import org.apache.http.client.config.RequestConfig;
-import org.apache.http.impl.client.CloseableHttpClient;
-import org.apache.http.impl.client.HttpClientBuilder;
-import org.apache.http.impl.client.StandardHttpRequestRetryHandler;
-import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import jakarta.annotation.PostConstruct;
 import java.io.FileWriter;
@@ -33,7 +28,9 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * Telegram-бот для поиска новостей с морфологическим анализом (стеммингом) без LLM.
+ * Telegram-бот для поиска новостей с морфологическим анализом (стеммингом).
+ * <p>
+ * Никакие LLM/нейросети не используются ни на одном этапе.
  * <p>
  * Основная логика:
  * <ol>
@@ -51,11 +48,14 @@ public class VpoBot extends TelegramLongPollingBot {
 
     // ======================== Конфигурация и зависимости ========================
 
+    /** Имя бота (из application.properties) */
     private final String botName;
+    /** Токен бота, полученный от @BotFather */
     private final String botToken;
+    /** Список ID пользователей, которым разрешён доступ к боту */
     private final List<Long> allowedUsers;
+    /** Парсер RSS-лент с Lucene RussianAnalyzer */
     private final Parser parser;
-    private final AiService aiService;  // только для проверки доступности Ollama (isAvailable)
 
     // ======================== Хранилище состояний ========================
 
@@ -88,42 +88,43 @@ public class VpoBot extends TelegramLongPollingBot {
     /** Формат времени для записи в лог */
     private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
-    // ======================== Конструктор и инициализация ========================
+    // ======================== Конструктор ========================
 
+    /**
+     * Конструктор, вызываемый Spring Boot.
+     * Все зависимости внедряются автоматически.
+     */
     public VpoBot(@Value("${bot.name}") String botName,
                   @Value("${bot.token}") String botToken,
                   @Value("${bot.allowed-users}") List<Long> allowedUsers,
-                  Parser parser,
-                  AiService aiService) {
+                  Parser parser) {
         this.botName = botName;
         this.botToken = botToken;
         this.allowedUsers = allowedUsers;
         this.parser = parser;
-        this.aiService = aiService;
     }
+
+    // ======================== Инициализация ========================
 
     /**
      * Инициализация бота при старте приложения.
-     * Регистрирует бота в Telegram API, проверяет доступность Ollama,
+     * Регистрирует бота в Telegram API, настраивает таймауты HTTP-клиента
+     * для предотвращения периодических {@code SocketTimeoutException},
      * маскирует токен в логах и создаёт директории для обратной связи.
      */
     @PostConstruct
     public void init() {
         try {
-            // Увеличиваем таймауты HTTP-клиента Telegram Bots, чтобы избежать периодических SocketTimeoutException
-            System.setProperty("org.telegram.telegrambots.updatesreceivers.DefaultBotSession.TIMEOUT", "75");
-            System.setProperty("org.telegram.telegrambots.updatesreceivers.DefaultBotSession.CONNECTION_TIMEOUT", "30");
+            // Увеличиваем таймауты HTTP-клиента Telegram Bots, чтобы избежать
+            // периодических SocketTimeoutException при получении обновлений
+            System.setProperty(
+                    "org.telegram.telegrambots.updatesreceivers.DefaultBotSession.TIMEOUT", "75");
+            System.setProperty(
+                    "org.telegram.telegrambots.updatesreceivers.DefaultBotSession.CONNECTION_TIMEOUT", "30");
 
             TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
             botsApi.registerBot(this);
             log.info("Bot registered successfully: {}", botName);
-
-            // Проверка доступности LLM (не критично — бот работает и без неё)
-            if (!aiService.isAvailable()) {
-                log.warn("Ollama is not available or model is not loaded. AI features will be disabled.");
-            } else {
-                log.info("Ollama is healthy.");
-            }
 
             // Маскировка токена в логах (первые 10 символов)
             if (botToken.length() >= 10) {
@@ -150,10 +151,11 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Главный обработчик входящих сообщений и callback-запросов.
-     * <p>
-     * Логика:
+     *
+     * <p><b>Логика:</b>
      * <ol>
-     *   <li>Если пришёл callback (нажатие кнопки) → делегируется в {@link #handleCallbackQuery(Update)}.</li>
+     *   <li>Если пришёл callback (нажатие кнопки) → делегируется в
+     *       {@link #handleCallbackQuery(Update)}.</li>
      *   <li>Проверяется белый список пользователей.</li>
      *   <li>Длинные сообщения обрезаются до 500 символов.</li>
      *   <li>Если ожидается комментарий — сохраняется обратная связь.</li>
@@ -164,11 +166,13 @@ public class VpoBot extends TelegramLongPollingBot {
      */
     @Override
     public void onUpdateReceived(Update update) {
+        // Нажатия inline-кнопок
         if (update.hasCallbackQuery()) {
             handleCallbackQuery(update);
             return;
         }
 
+        // Только текстовые сообщения
         if (!update.hasMessage() || !update.getMessage().hasText()) return;
 
         Long userId = update.getMessage().getFrom().getId();
@@ -183,7 +187,7 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Ограничение длины запроса (защита от DoS)
+        // Ограничение длины запроса (защита от чрезмерно длинных сообщений)
         if (messageText.length() > 500) {
             messageText = messageText.substring(0, 500);
             sendTextMessage(chatId, "⚠️ Сообщение было обрезано до 500 символов.");
@@ -193,7 +197,7 @@ public class VpoBot extends TelegramLongPollingBot {
         log.info("User request: userName={} (ID={}), query={}",
                 update.getMessage().getFrom().getUserName(), userId, messageText);
 
-        // Если ожидается комментарий — сохраняем его
+        // Если ожидается комментарий от этого пользователя — сохраняем его
         if (pendingComment.containsKey(chatId)) {
             String feedbackType = pendingComment.remove(chatId);
             User user = pendingCommentUser.remove(chatId);
@@ -217,8 +221,8 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Обрабатывает нажатия на inline-кнопки под сообщениями бота.
-     * <p>
-     * Поддерживаемые действия:
+     *
+     * <p><b>Поддерживаемые действия:</b>
      * <ul>
      *   <li>{@code CALLBACK_PREV} / {@code CALLBACK_NEXT} — пагинация результатов.</li>
      *   <li>{@code CALLBACK_LIKE} / {@code CALLBACK_DISLIKE} — запрос комментария.</li>
@@ -284,8 +288,8 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Выполняет поиск новостей с использованием морфологического анализа (стемминга).
-     * <p>
-     * Алгоритм:
+     *
+     * <p><b>Алгоритм:</b>
      * <ol>
      *   <li>Запрос передаётся в {@link Parser#searchByStemsRanked(String)}.</li>
      *   <li>Результаты кэшируются для пагинации и выводятся первой страницей.</li>
@@ -297,7 +301,7 @@ public class VpoBot extends TelegramLongPollingBot {
     private void performSearch(String chatId, String query) {
         sendTextMessage(chatId, "⏳ Ищу новости...");
 
-        // Поиск по основам слов с ранжированием
+        // Поиск по основам слов с ранжированием по количеству совпадений
         List<NewsPost> news = parser.searchByStemsRanked(query);
 
         if (news.isEmpty()) {
@@ -316,9 +320,9 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Отправляет или редактирует сообщение с очередной страницей новостей.
-     * <p>
-     * На одной странице отображается до 5 новостей. Если общее количество новостей
-     * больше, под сообщением выводятся кнопки навигации «◀ Назад» и «Вперёд ▶».
+     *
+     * <p>На одной странице отображается до 5 новостей. Если общее количество
+     * новостей больше, под сообщением выводятся кнопки навигации «◀ Назад» и «Вперёд ▶».
      *
      * @param chatId    ID чата Telegram
      * @param messageId ID редактируемого сообщения (null для нового сообщения)
@@ -377,8 +381,8 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Создаёт клавиатуру для сообщения с результатами поиска.
-     * <p>
-     * Содержит два ряда кнопок:
+     *
+     * <p><b>Содержит два ряда кнопок:</b>
      * <ol>
      *   <li>«◀ Назад» и «Вперёд ▶» — навигация по страницам (отображаются при необходимости).</li>
      *   <li>«❤️ Понравилось» и «👎 Не подходит» — обратная связь.</li>
@@ -457,8 +461,8 @@ public class VpoBot extends TelegramLongPollingBot {
 
     /**
      * Сохраняет комментарий пользователя в файл логов.
-     * <p>
-     * Файлы сохраняются в папки {@code logs/likes/} или {@code logs/dislikes/}
+     *
+     * <p>Файлы сохраняются в папки {@code logs/likes/} или {@code logs/dislikes/}
      * с именем, соответствующим текущей дате (например, {@code 2026-05-19.log}).
      * В каждой строке записывается временная метка, информация о пользователе и текст комментария.
      *

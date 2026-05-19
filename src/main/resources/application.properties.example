@@ -6,9 +6,6 @@ bot.allowed-users=${ALLOWED_USERS}
 
 rss.urls=... (ваш список RSS)
 
-ollama.api.url=http://localhost:11434
-ollama.model=${OLLAMA_MODEL:qwen2.5:1.5b}
-
 logging.file.name=logs/bot.log
 logging.file.max-size=10MB
 logging.file.max-history=7
