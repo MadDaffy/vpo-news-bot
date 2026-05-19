@@ -13,6 +13,11 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClientBuilder;
+import org.apache.http.impl.client.StandardHttpRequestRetryHandler;
+import org.telegram.telegrambots.updatesreceivers.DefaultBotSession;
 
 import jakarta.annotation.PostConstruct;
 import java.io.FileWriter;
@@ -26,37 +31,64 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.stream.Collectors;
 
+/**
+ * Telegram-бот для поиска новостей с морфологическим анализом (стеммингом) без LLM.
+ * <p>
+ * Основная логика:
+ * <ol>
+ *   <li>Пользователь отправляет запрос (слово, фразу или предложение).</li>
+ *   <li>Парсер выполняет поиск по основам слов с ранжированием
+ *       (метод {@link Parser#searchByStemsRanked(String)}).</li>
+ *   <li>Результаты выводятся с пагинацией (по 5 новостей на странице)
+ *       и кнопками навигации «◀ Назад» / «Вперёд ▶».</li>
+ *   <li>Кнопки «❤️ Понравилось» / «👎 Не подходит» позволяют оставить обратную связь.</li>
+ * </ol>
+ */
 @Slf4j
 @Component
 public class VpoBot extends TelegramLongPollingBot {
+
+    // ======================== Конфигурация и зависимости ========================
 
     private final String botName;
     private final String botToken;
     private final List<Long> allowedUsers;
     private final Parser parser;
-    private final AiService aiService;
+    private final AiService aiService;  // только для проверки доступности Ollama (isAvailable)
 
-    // Хранилище состояний
+    // ======================== Хранилище состояний ========================
+
+    /** Последний запрос пользователя (chatId → query) */
     private final Map<String, String> lastQuery = new ConcurrentHashMap<>();
-    private final Map<String, List<NewsPost>> exactSearchResult = new ConcurrentHashMap<>();
+    /** Ожидание комментария: chatId → "like" или "dislike" */
     private final Map<String, String> pendingComment = new ConcurrentHashMap<>();
+    /** Пользователь, ожидающий комментарий: chatId → User */
     private final Map<String, User> pendingCommentUser = new ConcurrentHashMap<>();
+    /** Последний список новостей для пагинации (chatId → список) */
     private final Map<String, List<NewsPost>> lastNewsList = new ConcurrentHashMap<>();
+    /** Текущий отступ для пагинации (chatId → offset) */
     private final Map<String, Integer> lastShownOffset = new ConcurrentHashMap<>();
 
-    private static final String CALLBACK_EXPAND = "expand";
-    private static final String CALLBACK_PREV = "prev";
-    private static final String CALLBACK_NEXT = "next";
-    private static final String CALLBACK_LIKE = "like";
-    private static final String CALLBACK_DISLIKE = "dislike";
-    private static final String CALLBACK_COMMENT_YES = "comment_yes";
-    private static final String CALLBACK_COMMENT_NO = "comment_no";
+    // ======================== Константы callback-данных ========================
 
+    private static final String CALLBACK_PREV = "prev";            // кнопка "◀ Назад"
+    private static final String CALLBACK_NEXT = "next";            // кнопка "Вперёд ▶"
+    private static final String CALLBACK_LIKE = "like";            // кнопка "❤️ Понравилось"
+    private static final String CALLBACK_DISLIKE = "dislike";      // кнопка "👎 Не подходит"
+    private static final String CALLBACK_COMMENT_YES = "comment_yes";  // "Да, конечно"
+    private static final String CALLBACK_COMMENT_NO = "comment_no";    // "Нет"
+
+    // ======================== Временные константы ========================
+
+    /** Московский часовой пояс для записи времени в логи обратной связи */
     private static final ZoneId MOSCOW_ZONE = ZoneId.of("Europe/Moscow");
+    /** Формат даты для имени файла лога */
     private static final DateTimeFormatter DATE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+    /** Формат времени для записи в лог */
     private static final DateTimeFormatter TIMESTAMP_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+
+    // ======================== Конструктор и инициализация ========================
 
     public VpoBot(@Value("${bot.name}") String botName,
                   @Value("${bot.token}") String botToken,
@@ -70,27 +102,37 @@ public class VpoBot extends TelegramLongPollingBot {
         this.aiService = aiService;
     }
 
+    /**
+     * Инициализация бота при старте приложения.
+     * Регистрирует бота в Telegram API, проверяет доступность Ollama,
+     * маскирует токен в логах и создаёт директории для обратной связи.
+     */
     @PostConstruct
     public void init() {
         try {
+            // Увеличиваем таймауты HTTP-клиента Telegram Bots, чтобы избежать периодических SocketTimeoutException
+            System.setProperty("org.telegram.telegrambots.updatesreceivers.DefaultBotSession.TIMEOUT", "75");
+            System.setProperty("org.telegram.telegrambots.updatesreceivers.DefaultBotSession.CONNECTION_TIMEOUT", "30");
+
             TelegramBotsApi botsApi = new TelegramBotsApi(DefaultBotSession.class);
             botsApi.registerBot(this);
             log.info("Bot registered successfully: {}", botName);
 
-            // Проверка доступности Ollama
+            // Проверка доступности LLM (не критично — бот работает и без неё)
             if (!aiService.isAvailable()) {
                 log.warn("Ollama is not available or model is not loaded. AI features will be disabled.");
             } else {
                 log.info("Ollama is healthy.");
             }
 
-            // Маскировка токена в логах
+            // Маскировка токена в логах (первые 10 символов)
             if (botToken.length() >= 10) {
                 log.info("Bot token (masked): {}...", botToken.substring(0, 10));
             } else {
                 log.warn("Bot token is shorter than 10 characters, security risk!");
             }
 
+            // Создаём папки для логов обратной связи
             Files.createDirectories(Path.of("logs/likes"));
             Files.createDirectories(Path.of("logs/dislikes"));
         } catch (TelegramApiException | IOException e) {
@@ -98,10 +140,28 @@ public class VpoBot extends TelegramLongPollingBot {
         }
     }
 
-    @Override public String getBotUsername() { return botName; }
-    @Override public String getBotToken() { return botToken; }
+    @Override
+    public String getBotUsername() { return botName; }
 
-    // ======================== ОСНОВНОЙ ОБРАБОТЧИК =========================
+    @Override
+    public String getBotToken() { return botToken; }
+
+    // ======================== ОСНОВНОЙ ОБРАБОТЧИК СООБЩЕНИЙ ========================
+
+    /**
+     * Главный обработчик входящих сообщений и callback-запросов.
+     * <p>
+     * Логика:
+     * <ol>
+     *   <li>Если пришёл callback (нажатие кнопки) → делегируется в {@link #handleCallbackQuery(Update)}.</li>
+     *   <li>Проверяется белый список пользователей.</li>
+     *   <li>Длинные сообщения обрезаются до 500 символов.</li>
+     *   <li>Если ожидается комментарий — сохраняется обратная связь.</li>
+     *   <li>Команда {@code /start} выводит приветствие.</li>
+     *   <li>Все остальные сообщения считаются поисковым запросом и передаются в
+     *       {@link #performSearch(String, String)}.</li>
+     * </ol>
+     */
     @Override
     public void onUpdateReceived(Update update) {
         if (update.hasCallbackQuery()) {
@@ -115,6 +175,7 @@ public class VpoBot extends TelegramLongPollingBot {
         String chatId = update.getMessage().getChatId().toString();
         String messageText = update.getMessage().getText();
 
+        // Проверка белого списка
         if (!allowedUsers.contains(userId)) {
             log.warn("Unauthorized access attempt: user={} (ID={}), message={}",
                     update.getMessage().getFrom().getUserName(), userId, messageText);
@@ -122,7 +183,7 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
-        // Ограничение длины запроса
+        // Ограничение длины запроса (защита от DoS)
         if (messageText.length() > 500) {
             messageText = messageText.substring(0, 500);
             sendTextMessage(chatId, "⚠️ Сообщение было обрезано до 500 символов.");
@@ -132,7 +193,7 @@ public class VpoBot extends TelegramLongPollingBot {
         log.info("User request: userName={} (ID={}), query={}",
                 update.getMessage().getFrom().getUserName(), userId, messageText);
 
-        // Если ожидается комментарий
+        // Если ожидается комментарий — сохраняем его
         if (pendingComment.containsKey(chatId)) {
             String feedbackType = pendingComment.remove(chatId);
             User user = pendingCommentUser.remove(chatId);
@@ -148,10 +209,22 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
-        performExactSearch(chatId, messageText);
+        // Основной поиск по основам слов (стемминг)
+        performSearch(chatId, messageText);
     }
 
-    // ======================== ОБРАБОТКА КНОПОК =========================
+    // ======================== ОБРАБОТКА НАЖАТИЙ КНОПОК ========================
+
+    /**
+     * Обрабатывает нажатия на inline-кнопки под сообщениями бота.
+     * <p>
+     * Поддерживаемые действия:
+     * <ul>
+     *   <li>{@code CALLBACK_PREV} / {@code CALLBACK_NEXT} — пагинация результатов.</li>
+     *   <li>{@code CALLBACK_LIKE} / {@code CALLBACK_DISLIKE} — запрос комментария.</li>
+     *   <li>{@code CALLBACK_COMMENT_YES} / {@code CALLBACK_COMMENT_NO} — ответ на запрос комментария.</li>
+     * </ul>
+     */
     private void handleCallbackQuery(Update update) {
         String data = update.getCallbackQuery().getData();
         String chatId = update.getCallbackQuery().getMessage().getChatId().toString();
@@ -159,11 +232,10 @@ public class VpoBot extends TelegramLongPollingBot {
         User user = update.getCallbackQuery().getFrom();
         Long userId = user.getId();
 
-        // Проверка белого списка для callback
+        // Проверка белого списка для callback (защита от перебора кнопок)
         if (!allowedUsers.contains(userId)) {
             log.warn("Unauthorized callback attempt: user={} (ID={}), data={}",
                     user.getUserName(), userId, data);
-            // Попытка ответить через editMessage или sendText
             editMessageTextAndRemoveKeyboard(chatId, messageId, "⛔ Доступ запрещён.");
             return;
         }
@@ -173,18 +245,9 @@ public class VpoBot extends TelegramLongPollingBot {
         String payload = parts.length > 1 ? parts[1] : "";
 
         switch (action) {
-            case CALLBACK_EXPAND:
-                String originalQuery = lastQuery.get(chatId);
-                if (originalQuery != null) {
-                    sendTextMessage(chatId, "⏳ Это займет немного времени...");
-                    performExpandedSearch(chatId, originalQuery);
-                } else {
-                    sendTextMessage(chatId, "Не удалось определить запрос. Повторите поиск.");
-                }
-                break;
-
             case CALLBACK_PREV:
             case CALLBACK_NEXT: {
+                // Пагинация: загружаем следующую/предыдущую страницу
                 int offset = 0;
                 try { offset = Integer.parseInt(payload); } catch (NumberFormatException ignored) {}
                 List<NewsPost> allNews = lastNewsList.get(chatId);
@@ -205,6 +268,7 @@ public class VpoBot extends TelegramLongPollingBot {
                 break;
 
             case CALLBACK_COMMENT_YES:
+                // Пользователь хочет оставить комментарий — запоминаем контекст
                 pendingComment.put(chatId, payload);
                 pendingCommentUser.put(chatId, user);
                 editMessageTextAndRemoveKeyboard(chatId, messageId, "Ожидаю ваш комментарий...");
@@ -216,77 +280,51 @@ public class VpoBot extends TelegramLongPollingBot {
         }
     }
 
-    // ======================== ПОИСК =========================
-// Основной поиск – теперь по основам слов (стемминг)
-    private void performExactSearch(String chatId, String query) {
+    // ======================== ПОИСК ========================
+
+    /**
+     * Выполняет поиск новостей с использованием морфологического анализа (стемминга).
+     * <p>
+     * Алгоритм:
+     * <ol>
+     *   <li>Запрос передаётся в {@link Parser#searchByStemsRanked(String)}.</li>
+     *   <li>Результаты кэшируются для пагинации и выводятся первой страницей.</li>
+     * </ol>
+     *
+     * @param chatId ID чата Telegram
+     * @param query  исходный запрос пользователя
+     */
+    private void performSearch(String chatId, String query) {
         sendTextMessage(chatId, "⏳ Ищу новости...");
 
+        // Поиск по основам слов с ранжированием
         List<NewsPost> news = parser.searchByStemsRanked(query);
 
         if (news.isEmpty()) {
-            SendMessage msg = new SendMessage();
-            msg.setChatId(chatId);
-            msg.setText("По запросу \"" + query + "\" ничего не найдено.");
-            msg.setReplyMarkup(createSearchAgainKeyboard());
-            executeMessage(msg);
+            sendTextMessage(chatId, "По запросу \"" + query + "\" ничего не найдено.");
             return;
         }
 
+        // Кэширование и вывод первой страницы
         lastNewsList.put(chatId, new ArrayList<>(news));
         lastShownOffset.remove(chatId);
-
-        sendNewsPage(chatId, null, news, 0);   // <-- правильный вызов
-    }
-
-    private void performExpandedSearch(String chatId, String query) {
-        List<String> phrases = aiService.expandQuery(query);
-        if (phrases == null) {
-            sendTextMessage(chatId, "🤖 ИИ-помощник сейчас недоступен. Попробуйте позже.");
-            return;
-        }
-        String combinedKeywords = String.join(" ", phrases);
-        List<NewsPost> allNews = parser.searchByKeywords(combinedKeywords);
-
-        if (allNews.isEmpty()) {
-            SendMessage msg = new SendMessage();
-            msg.setChatId(chatId);
-            msg.setText("По запросу \"" + query + "\" ничего не найдено.");
-            msg.setReplyMarkup(createSearchAgainKeyboard());
-            executeMessage(msg);
-            return;
-        }
-
-        allNews = rankByWordMatch(allNews, combinedKeywords);
-
-        List<NewsPost> exactResult = exactSearchResult.get(chatId);
-        if (exactResult != null && newsListsAreEqual(exactResult, allNews)) {
-            sendTextMessage(chatId, "😔 ИИ-помощник не нашел дополнительной информации");
-            return;
-        }
-
-        processSearchResult(chatId, query, allNews, true);
-    }
-
-    private void processSearchResult(String chatId, String query, List<NewsPost> news, boolean isExpanded) {
-        if (news.isEmpty()) {
-            SendMessage msg = new SendMessage();
-            msg.setChatId(chatId);
-            msg.setText("По запросу \"" + query + "\" ничего не найдено.");
-            msg.setReplyMarkup(createSearchAgainKeyboard());
-            executeMessage(msg);
-            return;
-        }
-
-        lastNewsList.put(chatId, new ArrayList<>(news));
-        lastShownOffset.remove(chatId);
-
-        if (!isExpanded) {
-            exactSearchResult.put(chatId, new ArrayList<>(news));
-        }
 
         sendNewsPage(chatId, null, news, 0);
     }
 
+    // ======================== ПАГИНАЦИЯ ========================
+
+    /**
+     * Отправляет или редактирует сообщение с очередной страницей новостей.
+     * <p>
+     * На одной странице отображается до 5 новостей. Если общее количество новостей
+     * больше, под сообщением выводятся кнопки навигации «◀ Назад» и «Вперёд ▶».
+     *
+     * @param chatId    ID чата Telegram
+     * @param messageId ID редактируемого сообщения (null для нового сообщения)
+     * @param allNews   полный список новостей
+     * @param offset    текущий отступ (сколько новостей уже показано)
+     */
     private void sendNewsPage(String chatId, Integer messageId, List<NewsPost> allNews, int offset) {
         int pageSize = 5;
         int total = allNews.size();
@@ -294,6 +332,7 @@ public class VpoBot extends TelegramLongPollingBot {
         int end = Math.min(start + pageSize, total);
         List<NewsPost> page = allNews.subList(start, end);
 
+        // Формируем текст сообщения
         StringBuilder response = new StringBuilder("🔹 Найдено " + total + " новостей");
         if (start > 0 || end < total) {
             response.append(" (показаны ").append(start + 1).append("–").append(end).append(")");
@@ -303,6 +342,7 @@ public class VpoBot extends TelegramLongPollingBot {
         for (int i = 0; i < page.size(); i++) {
             NewsPost post = page.get(i);
             String entry = (start + i + 1) + ". " + post.getTitle() + "\n" + post.getLink() + "\n\n";
+            // Контроль длины сообщения (Telegram API ограничивает 4096 символами)
             if (response.length() + entry.length() > 4000) {
                 response.append("... (обрезано)");
                 break;
@@ -315,6 +355,7 @@ public class VpoBot extends TelegramLongPollingBot {
         InlineKeyboardMarkup keyboard = createResultKeyboard(hasPrev, hasNext, start);
 
         if (messageId == null) {
+            // Новое сообщение
             SendMessage msg = new SendMessage();
             msg.setChatId(chatId);
             msg.setText(response.toString());
@@ -322,6 +363,7 @@ public class VpoBot extends TelegramLongPollingBot {
             msg.enableHtml(true);
             executeMessage(msg);
         } else {
+            // Редактирование существующего сообщения (для пагинации)
             EditMessageText edit = new EditMessageText();
             edit.setChatId(chatId);
             edit.setMessageId(messageId);
@@ -331,31 +373,67 @@ public class VpoBot extends TelegramLongPollingBot {
         }
     }
 
-    // ======================== РАНЖИРОВАНИЕ =========================
-    private List<NewsPost> rankByWordMatch(List<NewsPost> news, String keywords) {
-        String[] queryWords = keywords.toLowerCase().split("[,\\s]+");
-        List<NewsPost> sorted = new ArrayList<>(news);
-        sorted.sort((a, b) -> Integer.compare(countMatches(b, queryWords), countMatches(a, queryWords)));
-        return sorted;
+    // ======================== КЛАВИАТУРЫ ========================
+
+    /**
+     * Создаёт клавиатуру для сообщения с результатами поиска.
+     * <p>
+     * Содержит два ряда кнопок:
+     * <ol>
+     *   <li>«◀ Назад» и «Вперёд ▶» — навигация по страницам (отображаются при необходимости).</li>
+     *   <li>«❤️ Понравилось» и «👎 Не подходит» — обратная связь.</li>
+     * </ol>
+     *
+     * @param hasPrev       нужна ли кнопка «Назад»
+     * @param hasNext       нужна ли кнопка «Вперёд»
+     * @param currentOffset текущий отступ для расчёта следующей/предыдущей страницы
+     * @return готовая клавиатура
+     */
+    private InlineKeyboardMarkup createResultKeyboard(boolean hasPrev, boolean hasNext, int currentOffset) {
+        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
+        List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
+
+        // Ряд 1: Навигация
+        List<InlineKeyboardButton> navRow = new ArrayList<>();
+        if (hasPrev) {
+            InlineKeyboardButton prevBtn = new InlineKeyboardButton();
+            prevBtn.setText("◀ Назад");
+            prevBtn.setCallbackData(CALLBACK_PREV + ":" + Math.max(0, currentOffset - 5));
+            navRow.add(prevBtn);
+        }
+        if (hasNext) {
+            InlineKeyboardButton nextBtn = new InlineKeyboardButton();
+            nextBtn.setText("Вперёд ▶");
+            nextBtn.setCallbackData(CALLBACK_NEXT + ":" + (currentOffset + 5));
+            navRow.add(nextBtn);
+        }
+        if (!navRow.isEmpty()) keyboard.add(navRow);
+
+        // Ряд 2: Обратная связь
+        List<InlineKeyboardButton> feedbackRow = new ArrayList<>();
+        InlineKeyboardButton likeBtn = new InlineKeyboardButton();
+        likeBtn.setText("❤️ Понравилось");
+        likeBtn.setCallbackData(CALLBACK_LIKE);
+        feedbackRow.add(likeBtn);
+        InlineKeyboardButton dislikeBtn = new InlineKeyboardButton();
+        dislikeBtn.setText("👎 Не подходит");
+        dislikeBtn.setCallbackData(CALLBACK_DISLIKE);
+        feedbackRow.add(dislikeBtn);
+        keyboard.add(feedbackRow);
+
+        markup.setKeyboard(keyboard);
+        return markup;
     }
 
-    private int countMatches(NewsPost post, String[] queryWords) {
-        String title = post.getTitle() != null ? post.getTitle().toLowerCase() : "";
-        String desc = post.getDescription() != null ? post.getDescription().toLowerCase() : "";
-        String combined = title + " " + desc;
-        int matches = 0;
-        for (String w : queryWords) if (!w.isEmpty() && combined.contains(w)) matches++;
-        return matches;
-    }
+    // ======================== ОБРАТНАЯ СВЯЗЬ ========================
 
-    private boolean newsListsAreEqual(List<NewsPost> l1, List<NewsPost> l2) {
-        if (l1.size() != l2.size()) return false;
-        Set<String> t1 = l1.stream().map(n -> n.getTitle() == null ? "" : n.getTitle()).collect(Collectors.toSet());
-        Set<String> t2 = l2.stream().map(n -> n.getTitle() == null ? "" : n.getTitle()).collect(Collectors.toSet());
-        return t1.equals(t2);
-    }
-
-    // ======================== ОБРАТНАЯ СВЯЗЬ =========================
+    /**
+     * Отправляет сообщение с вопросом о желании оставить комментарий.
+     * Содержит кнопки «Да, конечно» и «Нет».
+     *
+     * @param chatId       ID чата Telegram
+     * @param feedbackType тип обратной связи ("like" или "dislike")
+     */
     private void askForComment(String chatId, String feedbackType) {
         InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
         List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
@@ -377,16 +455,31 @@ public class VpoBot extends TelegramLongPollingBot {
         executeMessage(msg);
     }
 
+    /**
+     * Сохраняет комментарий пользователя в файл логов.
+     * <p>
+     * Файлы сохраняются в папки {@code logs/likes/} или {@code logs/dislikes/}
+     * с именем, соответствующим текущей дате (например, {@code 2026-05-19.log}).
+     * В каждой строке записывается временная метка, информация о пользователе и текст комментария.
+     *
+     * @param type    тип обратной связи ("like" или "dislike")
+     * @param chatId  ID чата Telegram
+     * @param user    объект пользователя Telegram
+     * @param comment текст комментария
+     */
     private void saveFeedback(String type, String chatId, User user, String comment) {
         String folder = type.equals("like") ? "logs/likes" : "logs/dislikes";
         String today = LocalDate.now(MOSCOW_ZONE).format(DATE_FORMAT);
         String fileName = folder + "/" + today + ".log";
         String timestamp = LocalDateTime.now(MOSCOW_ZONE).format(TIMESTAMP_FORMAT);
+
+        // Собираем информацию о пользователе: имя, фамилия, никнейм
         String firstName = user.getFirstName() != null ? user.getFirstName() : "";
         String lastName = user.getLastName() != null ? user.getLastName() : "";
         String userName = user.getUserName() != null ? "@" + user.getUserName() : "";
         String userInfo = (firstName + " " + lastName).trim();
         if (!userName.isEmpty()) userInfo += " (" + userName + ")";
+
         try {
             Files.createDirectories(Path.of(folder));
             try (PrintWriter pw = new PrintWriter(new FileWriter(fileName, true))) {
@@ -398,61 +491,9 @@ public class VpoBot extends TelegramLongPollingBot {
         }
     }
 
-    // ======================== КЛАВИАТУРЫ =========================
-    private InlineKeyboardMarkup createResultKeyboard(boolean hasPrev, boolean hasNext, int currentOffset) {
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
+    // ======================== ВСПОМОГАТЕЛЬНЫЕ МЕТОДЫ ========================
 
-        List<InlineKeyboardButton> navRow = new ArrayList<>();
-        if (hasPrev) {
-            InlineKeyboardButton prevBtn = new InlineKeyboardButton();
-            prevBtn.setText("◀ Назад");
-            prevBtn.setCallbackData(CALLBACK_PREV + ":" + Math.max(0, currentOffset - 5));
-            navRow.add(prevBtn);
-        }
-        if (hasNext) {
-            InlineKeyboardButton nextBtn = new InlineKeyboardButton();
-            nextBtn.setText("Вперёд ▶");
-            nextBtn.setCallbackData(CALLBACK_NEXT + ":" + (currentOffset + 5));
-            navRow.add(nextBtn);
-        }
-        if (!navRow.isEmpty()) keyboard.add(navRow);
-
-        List<InlineKeyboardButton> expandRow = new ArrayList<>();
-        InlineKeyboardButton expandBtn = new InlineKeyboardButton();
-        expandBtn.setText("🔍 Расширить результаты с ИИ");
-        expandBtn.setCallbackData(CALLBACK_EXPAND);
-        expandRow.add(expandBtn);
-        keyboard.add(expandRow);
-
-        List<InlineKeyboardButton> feedbackRow = new ArrayList<>();
-        InlineKeyboardButton likeBtn = new InlineKeyboardButton();
-        likeBtn.setText("❤️ Понравилось");
-        likeBtn.setCallbackData(CALLBACK_LIKE);
-        feedbackRow.add(likeBtn);
-        InlineKeyboardButton dislikeBtn = new InlineKeyboardButton();
-        dislikeBtn.setText("👎 Не подходит");
-        dislikeBtn.setCallbackData(CALLBACK_DISLIKE);
-        feedbackRow.add(dislikeBtn);
-        keyboard.add(feedbackRow);
-
-        markup.setKeyboard(keyboard);
-        return markup;
-    }
-
-    private InlineKeyboardMarkup createSearchAgainKeyboard() {
-        InlineKeyboardMarkup markup = new InlineKeyboardMarkup();
-        List<List<InlineKeyboardButton>> keyboard = new ArrayList<>();
-        List<InlineKeyboardButton> row = new ArrayList<>();
-        InlineKeyboardButton expandBtn = new InlineKeyboardButton();
-        expandBtn.setText("🔍 Расширить результаты с ИИ");
-        expandBtn.setCallbackData(CALLBACK_EXPAND);
-        row.add(expandBtn);
-        keyboard.add(row);
-        markup.setKeyboard(keyboard);
-        return markup;
-    }
-
+    /** Отправляет приветственное сообщение. */
     private void sendStartMessage(String chatId) {
         sendTextMessage(chatId,
                 "Привет! Я бот для поиска новостей.\n\n" +
@@ -460,6 +501,7 @@ public class VpoBot extends TelegramLongPollingBot {
                         "🔹 Я понимаю склонения, синонимы и перефразы.");
     }
 
+    /** Отправляет текстовое сообщение в чат. */
     private void sendTextMessage(String chatId, String text) {
         SendMessage msg = new SendMessage();
         msg.setChatId(chatId);
@@ -467,15 +509,20 @@ public class VpoBot extends TelegramLongPollingBot {
         executeMessage(msg);
     }
 
+    /**
+     * Редактирует сообщение и убирает клавиатуру.
+     * Используется для завершения диалога обратной связи.
+     */
     private void editMessageTextAndRemoveKeyboard(String chatId, Integer messageId, String text) {
         EditMessageText edit = new EditMessageText();
         edit.setChatId(chatId);
         edit.setMessageId(messageId);
         edit.setText(text);
-        edit.setReplyMarkup(null);
+        edit.setReplyMarkup(null);  // убираем клавиатуру
         try { execute(edit); } catch (TelegramApiException e) { log.error("Error editing message", e); }
     }
 
+    /** Выполняет отправку сообщения с обработкой ошибок. */
     private void executeMessage(SendMessage msg) {
         try { execute(msg); } catch (TelegramApiException e) { log.error("Error sending message", e); }
     }
