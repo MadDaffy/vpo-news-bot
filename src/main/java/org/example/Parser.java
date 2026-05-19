@@ -12,25 +12,25 @@ import org.apache.http.client.methods.HttpGet;
 import org.apache.http.impl.client.HttpClientBuilder;
 import org.apache.http.impl.client.StandardHttpRequestRetryHandler;
 import org.apache.http.util.EntityUtils;
+import org.apache.lucene.analysis.TokenStream;
+import org.apache.lucene.analysis.ru.RussianAnalyzer;
+import org.apache.lucene.analysis.tokenattributes.CharTermAttribute;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
-import java.util.ArrayList;
-import java.util.List;
+import java.io.StringReader;
+import java.util.*;
 import java.util.stream.Collectors;
 
-/**
- * Парсер RSS-лент. Загружает новости и умеет искать:
- * - по полной фразе (точный поиск)
- * - по набору ключевых слов (расширенный поиск)
- */
+
 @Slf4j
 @Component
 public class Parser {
 
     private final HttpClient httpClient;
     private final XmlMapper xmlMapper;
+    private final RussianAnalyzer russianAnalyzer;   // морфологический анализатор
 
     @Value("${rss.urls}")
     private List<String> rssUrls;
@@ -45,11 +45,9 @@ public class Parser {
                 .setRetryHandler(new StandardHttpRequestRetryHandler(3, true))
                 .build();
         this.xmlMapper = new XmlMapper();
+        this.russianAnalyzer = new RussianAnalyzer();   // Lucene Russian Analyzer
     }
 
-    /**
-     * Загружает ВСЕ новости из всех RSS-лент без фильтрации.
-     */
     public List<NewsPost> getAllNews() {
         List<NewsPost> allNews = new ArrayList<>();
         for (String url : rssUrls) {
@@ -57,17 +55,12 @@ public class Parser {
                 HttpGet request = new HttpGet(url);
                 HttpResponse response = httpClient.execute(request);
                 if (response.getStatusLine().getStatusCode() != 200) continue;
-
-                // Определяем кодировку из Content-Type
                 String charset = "UTF-8";
                 if (response.getEntity().getContentType() != null) {
                     String contentType = response.getEntity().getContentType().getValue();
                     String[] parts = contentType.split("charset=");
-                    if (parts.length > 1) {
-                        charset = parts[1].trim();
-                    }
+                    if (parts.length > 1) charset = parts[1].trim();
                 }
-
                 String xml = EntityUtils.toString(response.getEntity(), charset);
                 RssWrapper wrapper = xmlMapper.readValue(xml, RssWrapper.class);
                 if (wrapper != null && wrapper.getChannel() != null && wrapper.getChannel().getItems() != null) {
@@ -80,13 +73,37 @@ public class Parser {
         return allNews;
     }
 
-    /**
-     * Ищет новости, содержащие ПОЛНУЮ строку (точное совпадение фразы).
-     */
-    public List<NewsPost> searchExactPhrase(String phrase) {
+    public List<NewsPost> searchByStemsRanked(String query) {
         List<NewsPost> allNews = getAllNews();
         if (allNews.isEmpty()) return new ArrayList<>();
 
+        Set<String> queryStems = stemText(query);
+        if (queryStems.isEmpty()) return new ArrayList<>();
+
+        // Считаем для каждой новости количество совпавших основ
+        Map<NewsPost, Integer> newsScores = new HashMap<>();
+        for (NewsPost news : allNews) {
+            String text = (news.getTitle() != null ? news.getTitle() : "")
+                    + " " + (news.getDescription() != null ? news.getDescription() : "");
+            Set<String> newsStems = stemText(text);
+            // Пересечение основ запроса и новости
+            Set<String> intersection = new HashSet<>(queryStems);
+            intersection.retainAll(newsStems);
+            if (!intersection.isEmpty()) {
+                newsScores.put(news, intersection.size());
+            }
+        }
+
+        // Сортируем по убыванию количества совпадений
+        return newsScores.entrySet().stream()
+                .sorted(Map.Entry.<NewsPost, Integer>comparingByValue().reversed())
+                .map(Map.Entry::getKey)
+                .collect(Collectors.toList());
+    }
+    // Точный поиск (полная фраза)
+    public List<NewsPost> searchExactPhrase(String phrase) {
+        List<NewsPost> allNews = getAllNews();
+        if (allNews.isEmpty()) return new ArrayList<>();
         String lowerPhrase = phrase.toLowerCase();
         return allNews.stream()
                 .filter(n -> {
@@ -97,13 +114,10 @@ public class Parser {
                 .collect(Collectors.toList());
     }
 
-    /**
-     * Ищет новости, содержащие ХОТЯ БЫ ОДНО из ключевых слов (по подстроке).
-     */
+    // Поиск по ключевым словам (подстрока)
     public List<NewsPost> searchByKeywords(String keywords) {
         List<NewsPost> allNews = getAllNews();
         if (allNews.isEmpty()) return new ArrayList<>();
-
         String[] words = keywords.toLowerCase().split("[,\\s]+");
         return allNews.stream()
                 .filter(n -> {
@@ -115,6 +129,53 @@ public class Parser {
                     return false;
                 })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * Ищет новости по основам слов (стемминг). Игнорирует окончания, падежи, склонения.
+     * Пример: запрос "Ормузском" найдёт "Ормузский", "Ормузского" и т.д.
+     */
+    public List<NewsPost> searchByStems(String query) {
+        List<NewsPost> allNews = getAllNews();
+        if (allNews.isEmpty()) return new ArrayList<>();
+
+        // Извлекаем основы (стемы) из запроса
+        Set<String> queryStems = stemText(query);
+        if (queryStems.isEmpty()) return new ArrayList<>();
+
+        return allNews.stream()
+                .filter(news -> {
+                    String text = (news.getTitle() != null ? news.getTitle() : "")
+                            + " " + (news.getDescription() != null ? news.getDescription() : "");
+                    Set<String> newsStems = stemText(text);
+                    // Если есть хотя бы одно пересечение по основе – новость подходит
+                    for (String qs : queryStems) {
+                        if (newsStems.contains(qs)) return true;
+                    }
+                    return false;
+                })
+                .collect(Collectors.toList());
+    }
+
+    /**
+     * Разбивает текст на токены и возвращает множество основ (стемов) с помощью RussianAnalyzer.
+     */
+    private Set<String> stemText(String text) {
+        Set<String> stems = new HashSet<>();
+        try (TokenStream ts = russianAnalyzer.tokenStream("", new StringReader(text))) {
+            ts.reset();
+            CharTermAttribute term = ts.getAttribute(CharTermAttribute.class);
+            while (ts.incrementToken()) {
+                String stem = term.toString();
+                if (stem.length() > 1) {   // отсекаем однобуквенные основы
+                    stems.add(stem);
+                }
+            }
+            ts.end();
+        } catch (IOException e) {
+            log.error("Ошибка стемминга текста: {}", e.getMessage());
+        }
+        return stems;
     }
 
     @lombok.Data

@@ -217,10 +217,25 @@ public class VpoBot extends TelegramLongPollingBot {
     }
 
     // ======================== ПОИСК =========================
+// Основной поиск – теперь по основам слов (стемминг)
     private void performExactSearch(String chatId, String query) {
         sendTextMessage(chatId, "⏳ Ищу новости...");
-        List<NewsPost> news = parser.searchExactPhrase(query);
-        processSearchResult(chatId, query, news, false);
+
+        List<NewsPost> news = parser.searchByStemsRanked(query);
+
+        if (news.isEmpty()) {
+            SendMessage msg = new SendMessage();
+            msg.setChatId(chatId);
+            msg.setText("По запросу \"" + query + "\" ничего не найдено.");
+            msg.setReplyMarkup(createSearchAgainKeyboard());
+            executeMessage(msg);
+            return;
+        }
+
+        lastNewsList.put(chatId, new ArrayList<>(news));
+        lastShownOffset.remove(chatId);
+
+        sendNewsPage(chatId, null, news, 0);   // <-- правильный вызов
     }
 
     private void performExpandedSearch(String chatId, String query) {
