@@ -6,5 +6,6 @@ services:
     environment:
       - BOT_TOKEN=${BOT_TOKEN}
       - ALLOWED_USERS=${ALLOWED_USERS}
+      - CLOUD_API_KEY=${CLOUD_API_KEY}
     volumes:
       - ./logs:/app/logs

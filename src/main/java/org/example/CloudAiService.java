@@ -17,21 +17,35 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Сервис для очистки запроса и расшифровки аббревиатур через облачное OpenAI‑совместимое API.
+ * Сервис для очистки поискового запроса и расшифровки аббревиатур
+ * с помощью облачного OpenAI-совместимого API (GPTunnel, OpenRouter и т.д.).
  * <p>
- * Поддерживает любые провайдеры (GPTunnel, OpenRouter, OpenAI и т.д.) —
- * достаточно указать ключ, URL и модель в конфигурации.
+ * Для переключения между провайдерами достаточно изменить три настройки
+ * в {@code application.properties}: {@code cloud.api.key}, {@code cloud.api.url}
+ * и {@code cloud.api.model}.
  */
 @Slf4j
 @Service
 public class CloudAiService {
 
+    /** API-ключ облачного провайдера */
     private final String apiKey;
+    /** URL эндпоинта для Chat Completions */
     private final String apiUrl;
+    /** Идентификатор используемой модели (например, {@code deepseek-chat}) */
     private final String model;
+    /** Маппер для работы с JSON */
     private final ObjectMapper objectMapper;
+    /** HTTP-клиент с настройками таймаутов */
     private final CloseableHttpClient httpClient;
 
+    /**
+     * Конструктор, автоматически внедряющий значения из конфигурации.
+     *
+     * @param apiKey  API-ключ облачного провайдера
+     * @param apiUrl  URL эндпоинта Chat Completions
+     * @param model   идентификатор модели
+     */
     public CloudAiService(@Value("${cloud.api.key}") String apiKey,
                           @Value("${cloud.api.url}") String apiUrl,
                           @Value("${cloud.api.model}") String model) {
@@ -41,17 +55,27 @@ public class CloudAiService {
         this.objectMapper = new ObjectMapper();
         this.httpClient = HttpClientBuilder.create()
                 .setDefaultRequestConfig(RequestConfig.custom()
-                        .setConnectTimeout(10_000)
-                        .setSocketTimeout(30_000)
+                        .setConnectTimeout(10_000)   // таймаут на установку соединения
+                        .setSocketTimeout(30_000)    // таймаут на ожидание ответа
                         .build())
                 .build();
     }
 
     /**
-     * Очищает запрос от мусорных слов и расшифровывает аббревиатуры через облачное API.
-     * Возвращает очищенный запрос. Если API недоступен — возвращает исходный запрос.
+     * Очищает пользовательский запрос от мусорных слов и одновременно
+     * расшифровывает все известные аббревиатуры через облачную LLM.
+     * <p>
+     * Промпт содержит полный перечень аббревиатур, требование удалить
+     * все стоп-слова и временные метки, а также пример ожидаемого ответа.
+     * <p>
+     * Если API недоступно или возвращает пустой ответ, метод возвращает
+     * исходный запрос без изменений — это обеспечивает отказоустойчивость.
+     *
+     * @param userQuery исходный запрос пользователя
+     * @return очищенный и расширенный запрос (знаменательные слова + расшифровки)
      */
     public String cleanAndExpandQuery(String userQuery) {
+        // Промпт, жёстко регламентирующий формат ответа
         String prompt = String.format(
                 "Ты — инструмент очистки поискового запроса. Отвечай ТОЛЬКО на русском языке. " +
                         "Удали ВСЕ предлоги, союзы, частицы, междометия, местоимения, вводные, вопросительные, модальные слова и слова-паразиты. " +
@@ -80,6 +104,7 @@ public class CloudAiService {
                 return userQuery;
             }
 
+            // Убираем возможные кавычки и переносы строк, приводим к нижнему регистру
             String cleaned = aiResponse.trim()
                     .replace("\"", "")
                     .replace("\n", " ")
@@ -88,13 +113,15 @@ public class CloudAiService {
             return cleaned;
         } catch (Exception e) {
             log.error("Ошибка при очистке запроса через облачное API", e);
-            return userQuery;
+            return userQuery;   // fallback – исходный запрос
         }
     }
 
     /**
-     * Быстрая проверка доступности API (опционально).
-     * @return true, если API отвечает
+     * Быстрая проверка доступности облачного API.
+     * Вызывается при старте бота для информативного логирования.
+     *
+     * @return {@code true}, если API отвечает на тестовый запрос
      */
     public boolean isAvailable() {
         try {
@@ -105,8 +132,18 @@ public class CloudAiService {
         }
     }
 
+    /**
+     * Отправляет сообщение в облачное API и возвращает текстовый ответ ассистента.
+     * <p>
+     * Использует стандартный формат OpenAI Chat Completions.
+     *
+     * @param userMessage сообщение для модели
+     * @return ответ модели
+     * @throws IOException при сетевых ошибках или ошибках API
+     */
     private String chat(String userMessage) throws IOException {
         HttpPost post = new HttpPost(apiUrl);
+        // GPTunnel (и аналоги) ожидают API-ключ без префикса "Bearer"
         post.setHeader("Authorization", apiKey);
         post.setHeader("Content-Type", "application/json");
 
@@ -128,6 +165,7 @@ public class CloudAiService {
         log.info("API response: {}", response);
 
         JsonNode root = objectMapper.readTree(response);
+        // Извлекаем содержимое первого ответа ассистента
         return root.get("choices").get(0).get("message").get("content").asText();
     }
 }
