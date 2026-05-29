@@ -6,6 +6,11 @@ bot.allowed-users=${ALLOWED_USERS}
 
 rss.urls=... (ваш список RSS)
 
+# Облачное API (GPTunnel, OpenRouter и т.д.)
+cloud.api.key=${CLOUD_API_KEY}
+cloud.api.url=https://gptunnel.ru/v1/chat/completions
+cloud.api.model=${CLOUD_API_MODEL:gpt-4o-mini}
+
 logging.file.name=logs/bot.log
 logging.file.max-size=10MB
 logging.file.max-history=7
