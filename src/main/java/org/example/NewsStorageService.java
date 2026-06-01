@@ -10,6 +10,10 @@ import java.util.stream.Collectors;
 /**
  * Сервис для сохранения новостей в PostgreSQL с pgvector
  * и выполнения векторного (семантического) поиска.
+ * <p>
+ * Уникальность записей контролируется по заголовку (title) –
+ * это предотвращает дублирование одной и той же новости,
+ * пришедшей из разных источников.
  */
 @Slf4j
 @Service
@@ -25,36 +29,34 @@ public class NewsStorageService {
 
     /**
      * Сохраняет список новостей в базу данных.
-     * Для каждой новости вычисляется эмбеддинг (если его ещё нет)
-     * и выполняется вставка в таблицу {@code news}.
-     * Новости с уже существующим {@code link} пропускаются.
+     * Для каждой новости вычисляется эмбеддинг и выполняется вставка в таблицу {@code news}.
+     * Новости, чей заголовок уже присутствует в базе, пропускаются.
      *
      * @param newsList список новостей для сохранения
      */
     public void saveNews(List<NewsPost> newsList) {
         int total = newsList.size();
         int processed = 0;
-        for (NewsPost news : newsList) {
-            // Пропускаем новости без ссылки – это наш уникальный ключ
-            if (news.getLink() == null || news.getLink().isBlank()) continue;
 
-            // Проверяем, нет ли уже такой новости в базе
+        for (NewsPost news : newsList) {
+            if (news.getTitle() == null || news.getTitle().isBlank()) continue;
+
+            // Проверяем уникальность по заголовку
             Integer count = jdbcTemplate.queryForObject(
-                    "SELECT COUNT(*) FROM news WHERE link = ?",
-                    Integer.class, news.getLink()
+                    "SELECT COUNT(*) FROM news WHERE title = ?",
+                    Integer.class, news.getTitle()
             );
             if (count != null && count > 0) continue;   // уже есть – пропускаем
 
             // Получаем эмбеддинг для заголовка + описания
-            String text = (news.getTitle() != null ? news.getTitle() : "")
-                    + " " + (news.getDescription() != null ? news.getDescription() : "");
+            String text = news.getTitle() + " " + (news.getDescription() != null ? news.getDescription() : "");
             double[] embedding = cloudAiService.embed(text);
             if (embedding == null) {
                 log.warn("Не удалось получить эмбеддинг для новости: {}", news.getTitle());
                 continue;
             }
 
-            // Вставляем новость в таблицу
+            // Вставляем новость (ссылку тоже сохраняем как есть, она больше не ключ)
             jdbcTemplate.update(
                     "INSERT INTO news (title, description, link, pub_date, embedding) VALUES (?, ?, ?, ?, ?::vector)",
                     news.getTitle(),
@@ -69,6 +71,7 @@ public class NewsStorageService {
                 log.info("Прогресс загрузки эмбеддингов: {}/{}", processed, total);
             }
         }
+
         log.info("Сохранено {} новых новостей (всего обработано {})", processed, total);
     }
 
@@ -100,9 +103,9 @@ public class NewsStorageService {
                     post.setPubDate(rs.getString("pub_date"));
                     return post;
                 },
-                pgvectorString(queryEmbedding),  // первый параметр: вектор запроса для сравнения
-                pgvectorString(queryEmbedding),  // второй параметр: повторно для ORDER BY
-                limit                             // третий параметр: лимит
+                pgvectorString(queryEmbedding),
+                pgvectorString(queryEmbedding),
+                limit
         );
     }
 
