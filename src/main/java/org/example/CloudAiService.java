@@ -143,7 +143,7 @@ public class CloudAiService {
                 return body;
             });
 
-            log.info("Embed API response: {}", response);
+//                        log.info("Embed API response: {}", response);
 
             JsonNode root = objectMapper.readTree(response);
             JsonNode embeddingArray = root.get("data").get(0).get("embedding");

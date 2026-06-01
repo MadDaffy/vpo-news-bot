@@ -26,6 +26,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.stream.Collectors;
 
 /**
  * Telegram-бот для поиска новостей.
@@ -250,6 +251,27 @@ public class VpoBot extends TelegramLongPollingBot {
             }
             return;
         }
+
+        if (messageText.startsWith("/hybrid")) {
+            String query = messageText.substring(8).trim(); // убираем "/hybrid "
+            if (query.isEmpty()) {
+                sendTextMessage(chatId, "Пожалуйста, напишите запрос после /hybrid. Например: /hybrid Что происходит в Ормузском проливе");
+                return;
+            }
+            sendTextMessage(chatId, "⏳ Ищу гибридно...");
+            List<NewsPost> results = hybridSearch(query, 10);
+            if (results.isEmpty()) {
+                sendTextMessage(chatId, "Ничего не найдено.");
+            } else {
+                StringBuilder sb = new StringBuilder("🔹 Результаты гибридного поиска:\n\n");
+                for (int i = 0; i < results.size(); i++) {
+                    NewsPost post = results.get(i);
+                    sb.append(i + 1).append(". ").append(post.getTitle()).append("\n").append(post.getLink()).append("\n\n");
+                }
+                sendTextMessage(chatId, sb.toString());
+            }
+            return;
+        }
         // Основной поиск с облачной очисткой запроса
         performSearch(chatId, messageText);
     }
@@ -357,6 +379,48 @@ public class VpoBot extends TelegramLongPollingBot {
         lastShownOffset.remove(chatId);
 
         sendNewsPage(chatId, null, news, 0);
+    }
+
+    /**
+     * Гибридный поиск: стемминг + векторный поиск с ранжированием через RRF.
+     * @param query исходный запрос пользователя
+     * @param limit количество возвращаемых результатов
+     * @return список новостей, отсортированный по релевантности
+     */
+    private List<NewsPost> hybridSearch(String query, int limit) {
+        // 1. Лексический поиск (стемминг)
+        String cleanedQuery = cloudAiService.cleanAndExpandQuery(query);
+        List<NewsPost> stemResults = parser.searchByStemsRanked(cleanedQuery);
+
+        // 2. Векторный (семантический) поиск
+        List<NewsPost> semanticResults = newsStorageService.semanticSearch(query, Math.max(limit, stemResults.size()));
+
+        // 3. Слияние через Reciprocal Rank Fusion
+        Map<String, Double> rrfScores = new HashMap<>();
+        Map<String, NewsPost> newsByLink = new LinkedHashMap<>(); // сохраняем порядок для уникальности
+
+        // Добавляем результаты стемминга с позиционными скорами
+        for (int i = 0; i < stemResults.size(); i++) {
+            String link = stemResults.get(i).getLink();
+            double rrf = 1.0 / (60 + i + 1);   // k=60, rank starts from 1
+            rrfScores.merge(link, rrf, Double::sum);
+            newsByLink.putIfAbsent(link, stemResults.get(i));
+        }
+
+        // Добавляем результаты векторного поиска
+        for (int i = 0; i < semanticResults.size(); i++) {
+            String link = semanticResults.get(i).getLink();
+            double rrf = 1.0 / (60 + i + 1);
+            rrfScores.merge(link, rrf, Double::sum);
+            newsByLink.putIfAbsent(link, semanticResults.get(i));
+        }
+
+        // Сортируем по убыванию RRF-скора и возвращаем топ-N
+        return rrfScores.entrySet().stream()
+                .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
+                .limit(limit)
+                .map(e -> newsByLink.get(e.getKey()))
+                .collect(Collectors.toList());
     }
 
     // ======================== ПАГИНАЦИЯ ========================
