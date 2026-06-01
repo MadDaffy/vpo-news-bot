@@ -17,7 +17,14 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Сервис для работы с облачным OpenAI‑совместимым API (GPTunnel).
+ * Сервис для взаимодействия с облачным OpenAI‑совместимым API (GPTunnel).
+ * <p>
+ * Предоставляет методы для:
+ * <ul>
+ *   <li>очистки запроса (удаление стоп‑слов, расшифровка аббревиатур) — для стемминга;</li>
+ *   <li>расшифровки аббревиатур с сохранением исходного текста — для векторного поиска;</li>
+ *   <li>получения эмбеддингов (векторных представлений) текста.</li>
+ * </ul>
  */
 @Slf4j
 @Service
@@ -45,8 +52,11 @@ public class CloudAiService {
     }
 
     /**
-     * Очищает запрос: удаляет стоп‑слова, временные метки и расшифровывает аббревиатуры.
-     * Используется для лексического поиска (стемминга).
+     * Очищает запрос от стоп‑слов, временных меток и расшифровывает аббревиатуры.
+     * Используется для подготовки текста перед лексическим поиском (стеммингом).
+     *
+     * @param userQuery исходный запрос пользователя
+     * @return очищенный запрос (нижний регистр, только знаменательные слова)
      */
     public String cleanAndExpandQuery(String userQuery) {
         String prompt = String.format(
@@ -85,8 +95,13 @@ public class CloudAiService {
 
     /**
      * Расшифровывает аббревиатуры, сохраняя исходные аббревиатуры в тексте.
-     * Используется для семантического (векторного) поиска.
+     * <p>
      * Пример: "Сводка СВО на сегодня" → "Сводка СВО (специальная военная операция) на сегодня"
+     * <p>
+     * Используется для подготовки текста перед семантическим (векторным) поиском.
+     *
+     * @param userQuery исходный запрос пользователя
+     * @return запрос с расшифровками аббревиатур в скобках
      */
     public String expandAbbreviationsKeepOriginal(String userQuery) {
         String prompt = String.format(
@@ -109,23 +124,10 @@ public class CloudAiService {
     }
 
     /**
-     * Быстрая проверка доступности API.
-     */
-    public boolean isAvailable() {
-        try {
-            chat("test");
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    // Метод chat и embed остаются без изменений, они уже есть в вашем классе
-
-    /**
-     * Получает эмбеддинг для переданного текста через облачное API.
+     * Получает эмбеддинг (векторное представление) для переданного текста.
+     *
      * @param text текст для векторизации
-     * @return массив double – эмбеддинг, или null при ошибке
+     * @return массив double — эмбеддинг, или null при ошибке
      */
     public double[] embed(String text) {
         try {
@@ -148,8 +150,6 @@ public class CloudAiService {
                 return body;
             });
 
-//                        log.info("Embed API response: {}", response);
-
             JsonNode root = objectMapper.readTree(response);
             JsonNode embeddingArray = root.get("data").get(0).get("embedding");
             double[] embedding = new double[embeddingArray.size()];
@@ -163,18 +163,8 @@ public class CloudAiService {
         }
     }
 
-    /**
-     * Отправляет сообщение в облачное API и возвращает текстовый ответ ассистента.
-     * <p>
-     * Использует стандартный формат OpenAI Chat Completions.
-     *
-     * @param userMessage сообщение для модели
-     * @return ответ модели
-     * @throws IOException при сетевых ошибках или ошибках API
-     */
     private String chat(String userMessage) throws IOException {
         HttpPost post = new HttpPost(apiUrl);
-        // GPTunnel (и аналоги) ожидают API-ключ без префикса "Bearer"
         post.setHeader("Authorization", apiKey);
         post.setHeader("Content-Type", "application/json");
 
@@ -196,7 +186,6 @@ public class CloudAiService {
         log.info("API response: {}", response);
 
         JsonNode root = objectMapper.readTree(response);
-        // Извлекаем содержимое первого ответа ассистента
         return root.get("choices").get(0).get("message").get("content").asText();
     }
 }

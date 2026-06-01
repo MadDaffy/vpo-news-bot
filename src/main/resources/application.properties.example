@@ -1,19 +1,41 @@
-# Пример файла конфигурации.
-# Перед запуском замените значения или установите переменные окружения.
-bot.name=(ИМЯ ВАШЕГО БОТА)
+bot.name=VPO_check_bot
 bot.token=${BOT_TOKEN}
 bot.allowed-users=${ALLOWED_USERS}
 
-rss.urls=... (ваш список RSS)
+rss.urls=https://ria.ru/export/rss2/archive/index.xml,\
+        https://lenta.ru/rss,\
+        https://www.interfax.ru/rss.asp,\
+        https://russian.rt.com/rss,\
+        https://www.mk.ru/rss/index.xml,\
+        https://rg.ru/xml/index.xml,\
+        https://www.vedomosti.ru/rss/news,\
+        https://www.kommersant.ru/rss/news.xml,\
+        https://www.aa.com.tr/ru/rss/default?cat=live,\
+        https://aif.ru/rss/news.php,\
+        https://www.oreanda-news.com/rss01/rss01.txt,\
+        https://www.opennet.ru/opennews/opennews_all_noadv.rss,\
+        https://eadaily.com/ru/rss/index.xml,\
+        https://tass.ru/rss/v2.xml,\
+        https://regnum.ru/rss,\
+        https://news.rambler.ru/rss/USA/,\
+        https://news.rambler.ru/rss/TRNC/,\
+        https://news.rambler.ru/rss/Serbia/,\
+        https://news.rambler.ru/rss/Syria/,\
+        https://news.rambler.ru/rss/Slovakia/,\
+        https://news.rambler.ru/rss/Slovenia/
 
-# Облачное API (GPTunnel, OpenRouter и т.д.)
+# Cloud API (GPTunnel)
 cloud.api.key=${CLOUD_API_KEY}
 cloud.api.url=https://gptunnel.ru/v1/chat/completions
-cloud.api.model=${CLOUD_API_MODEL:gpt-4o-mini}
+cloud.api.model=gpt-4o-mini
+
+# Database
+spring.datasource.url=${SPRING_DATASOURCE_URL}
+spring.datasource.username=${SPRING_DATASOURCE_USERNAME}
+spring.datasource.password=${SPRING_DATASOURCE_PASSWORD}
+spring.sql.init.mode=always
 
 logging.file.name=logs/bot.log
 logging.file.max-size=10MB
 logging.file.max-history=7
 spring.output.ansi.enabled=always
-
-spring.sql.init.mode=always

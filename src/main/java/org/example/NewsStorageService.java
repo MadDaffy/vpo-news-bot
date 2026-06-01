@@ -1,19 +1,26 @@
 package org.example;
 
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Сервис для сохранения новостей в PostgreSQL с pgvector
- * и выполнения векторного (семантического) поиска.
+ * Сервис для сохранения новостей в PostgreSQL с pgvector,
+ * обновления эмбеддингов и выполнения семантического поиска.
  * <p>
- * Уникальность записей контролируется по заголовку (title) –
+ * Уникальность записей контролируется по заголовку (title) —
  * это предотвращает дублирование одной и той же новости,
  * пришедшей из разных источников.
+ * <p>
+ * Каждые 6 часов автоматически запускается обновление новостей
+ * из RSS‑лент (метод {@link #refreshNews()}).
+ * Первое обновление стартует только через 6 часов после запуска,
+ * чтобы не конфликтовать с фоновой загрузкой при старте.
  */
 @Slf4j
 @Service
@@ -21,16 +28,22 @@ public class NewsStorageService {
 
     private final JdbcTemplate jdbcTemplate;
     private final CloudAiService cloudAiService;
+    private final Parser parser;
 
-    public NewsStorageService(JdbcTemplate jdbcTemplate, CloudAiService cloudAiService) {
+    public NewsStorageService(JdbcTemplate jdbcTemplate,
+                              CloudAiService cloudAiService,
+                              Parser parser) {
         this.jdbcTemplate = jdbcTemplate;
         this.cloudAiService = cloudAiService;
+        this.parser = parser;
     }
 
     /**
      * Сохраняет список новостей в базу данных.
-     * Для каждой новости вычисляется эмбеддинг и выполняется вставка в таблицу {@code news}.
-     * Новости, чей заголовок уже присутствует в базе, пропускаются.
+     * Для каждой новости вычисляется эмбеддинг и выполняется вставка.
+     * Новости с уже существующим заголовком пропускаются.
+     * При возникновении ошибки уникальности (редкий случай гонки)
+     * вставка логируется как предупреждение и не прерывает процесс.
      *
      * @param newsList список новостей для сохранения
      */
@@ -46,29 +59,32 @@ public class NewsStorageService {
                     "SELECT COUNT(*) FROM news WHERE title = ?",
                     Integer.class, news.getTitle()
             );
-            if (count != null && count > 0) continue;   // уже есть – пропускаем
+            if (count != null && count > 0) continue;
 
-            // Получаем эмбеддинг для заголовка + описания
-            String text = news.getTitle() + " " + (news.getDescription() != null ? news.getDescription() : "");
+            // Формируем текст для эмбеддинга: заголовок + описание
+            String text = (news.getTitle() != null ? news.getTitle() : "")
+                    + " " + (news.getDescription() != null ? news.getDescription() : "");
             double[] embedding = cloudAiService.embed(text);
             if (embedding == null) {
                 log.warn("Не удалось получить эмбеддинг для новости: {}", news.getTitle());
                 continue;
             }
 
-            // Вставляем новость (ссылку тоже сохраняем как есть, она больше не ключ)
-            jdbcTemplate.update(
-                    "INSERT INTO news (title, description, link, pub_date, embedding) VALUES (?, ?, ?, ?, ?::vector)",
-                    news.getTitle(),
-                    news.getDescription(),
-                    news.getLink(),
-                    news.getPubDate(),
-                    pgvectorString(embedding)
-            );
-
-            processed++;
-            if (processed % 10 == 0) {
-                log.info("Прогресс загрузки эмбеддингов: {}/{}", processed, total);
+            try {
+                jdbcTemplate.update(
+                        "INSERT INTO news (title, description, link, pub_date, embedding) VALUES (?, ?, ?, ?, ?::vector)",
+                        news.getTitle(),
+                        news.getDescription(),
+                        news.getLink(),
+                        news.getPubDate(),
+                        pgvectorString(embedding)
+                );
+                processed++;
+                if (processed % 10 == 0) {
+                    log.info("Прогресс загрузки эмбеддингов: {}/{}", processed, total);
+                }
+            } catch (DuplicateKeyException e) {
+                log.warn("Пропущен дубликат заголовка: {}", news.getTitle());
             }
         }
 
@@ -107,6 +123,18 @@ public class NewsStorageService {
                 pgvectorString(queryEmbedding),
                 limit
         );
+    }
+
+    /**
+     * Автоматически обновляет новости из RSS‑лент каждые 6 часов.
+     * Первое обновление стартует только через 6 часов после запуска.
+     */
+    @Scheduled(fixedRate = 6 * 60 * 60 * 1000, initialDelay = 6 * 60 * 60 * 1000)
+    public void refreshNews() {
+        log.info("Плановое обновление новостей из RSS...");
+        List<NewsPost> freshNews = parser.getAllNews();
+        saveNews(freshNews);
+        log.info("Плановое обновление завершено.");
     }
 
     /** Преобразует массив double в строку, понятную pgvector: "[0.1,0.2,0.3]" */

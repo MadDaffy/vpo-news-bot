@@ -1,14 +1,13 @@
--- Включаем расширение pgvector, если оно ещё не включено
+-- Включаем расширение pgvector
 CREATE EXTENSION IF NOT EXISTS vector;
 
--- Создаём таблицу новостей, если её нет.
--- Уникальность теперь контролируется по заголовку (title).
+-- Таблица новостей с эмбеддингами
 CREATE TABLE IF NOT EXISTS news (
                                     id SERIAL PRIMARY KEY,
-                                    title TEXT NOT NULL UNIQUE,
+                                    title TEXT NOT NULL UNIQUE,          -- уникальность по заголовку
                                     description TEXT,
                                     link TEXT NOT NULL,
                                     pub_date TEXT,
-                                    embedding vector(1536),
+                                    embedding vector(1536),             -- эмбеддинг размерности 1536
                                     created_at TIMESTAMP DEFAULT now()
 );
