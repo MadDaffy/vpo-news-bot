@@ -118,6 +118,47 @@ public class CloudAiService {
     }
 
     /**
+     * Получает эмбеддинг для переданного текста через облачное API.
+     * @param text текст для векторизации
+     * @return массив double – эмбеддинг, или null при ошибке
+     */
+    public double[] embed(String text) {
+        try {
+            HttpPost post = new HttpPost(apiUrl.replace("/chat/completions", "/embeddings"));
+            post.setHeader("Authorization", apiKey);
+            post.setHeader("Content-Type", "application/json");
+
+            var requestMap = Map.of(
+                    "model", "text-embedding-3-small",
+                    "input", text
+            );
+            String requestBody = objectMapper.writeValueAsString(requestMap);
+            post.setEntity(new StringEntity(requestBody, "UTF-8"));
+
+            String response = httpClient.execute(post, httpResponse -> {
+                String body = EntityUtils.toString(httpResponse.getEntity(), "UTF-8");
+                if (httpResponse.getStatusLine().getStatusCode() != 200) {
+                    throw new IOException("Embed API error " + httpResponse.getStatusLine().getStatusCode() + ": " + body);
+                }
+                return body;
+            });
+
+            log.info("Embed API response: {}", response);
+
+            JsonNode root = objectMapper.readTree(response);
+            JsonNode embeddingArray = root.get("data").get(0).get("embedding");
+            double[] embedding = new double[embeddingArray.size()];
+            for (int i = 0; i < embeddingArray.size(); i++) {
+                embedding[i] = embeddingArray.get(i).asDouble();
+            }
+            return embedding;
+        } catch (IOException e) {
+            log.error("Ошибка при получении эмбеддинга через облачное API", e);
+            return null;
+        }
+    }
+
+    /**
      * Быстрая проверка доступности облачного API.
      * Вызывается при старте бота для информативного логирования.
      *

@@ -53,6 +53,7 @@ public class VpoBot extends TelegramLongPollingBot {
     private final Parser parser;
     /** Облачный сервис для очистки запроса */
     private final CloudAiService cloudAiService;
+    private final NewsStorageService newsStorageService;
 
     // ======================== Хранилище состояний ========================
 
@@ -95,12 +96,14 @@ public class VpoBot extends TelegramLongPollingBot {
                   @Value("${bot.token}") String botToken,
                   @Value("${bot.allowed-users}") List<Long> allowedUsers,
                   Parser parser,
-                  CloudAiService cloudAiService) {
+                  CloudAiService cloudAiService,
+                  NewsStorageService newsStorageService) {
         this.botName = botName;
         this.botToken = botToken;
         this.allowedUsers = allowedUsers;
         this.parser = parser;
         this.cloudAiService = cloudAiService;
+        this.newsStorageService = newsStorageService;
     }
 
     // ======================== Инициализация ========================
@@ -137,6 +140,15 @@ public class VpoBot extends TelegramLongPollingBot {
             } else {
                 log.warn("Bot token is shorter than 10 characters, security risk!");
             }
+
+            // Запускаем фоновую загрузку эмбеддингов, чтобы не блокировать старт бота
+            new Thread(() -> {
+                log.info("Фоновая загрузка эмбеддингов начата.");
+                List<NewsPost> freshNews = parser.getAllNews();
+                newsStorageService.saveNews(freshNews);
+                log.info("Фоновая загрузка эмбеддингов завершена.");
+            }, "embedding-loader").start();
+
 
             // Создаём папки для логов обратной связи
             Files.createDirectories(Path.of("logs/likes"));
@@ -217,6 +229,27 @@ public class VpoBot extends TelegramLongPollingBot {
             return;
         }
 
+        if (messageText.startsWith("/semantic")) {
+            String query = messageText.substring(10).trim(); // убираем "/semantic"
+            if (query.isEmpty()) {
+                sendTextMessage(chatId, "Пожалуйста, напишите запрос после /semantic. Например: /semantic Что происходит в Ормузском проливе");
+                return;
+            }
+            sendTextMessage(chatId, "⏳ Ищу по смыслу...");
+            List<NewsPost> results = newsStorageService.semanticSearch(query, 5);
+            if (results.isEmpty()) {
+                sendTextMessage(chatId, "Ничего не найдено.");
+            } else {
+                // Формируем ответ (аналогично sendNewsPage, но без пагинации)
+                StringBuilder sb = new StringBuilder("🔹 Результаты семантического поиска:\n\n");
+                for (int i = 0; i < results.size(); i++) {
+                    NewsPost post = results.get(i);
+                    sb.append(i + 1).append(". ").append(post.getTitle()).append("\n").append(post.getLink()).append("\n\n");
+                }
+                sendTextMessage(chatId, sb.toString());
+            }
+            return;
+        }
         // Основной поиск с облачной очисткой запроса
         performSearch(chatId, messageText);
     }
