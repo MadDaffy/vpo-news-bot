@@ -17,35 +17,18 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Сервис для очистки поискового запроса и расшифровки аббревиатур
- * с помощью облачного OpenAI-совместимого API (GPTunnel, OpenRouter и т.д.).
- * <p>
- * Для переключения между провайдерами достаточно изменить три настройки
- * в {@code application.properties}: {@code cloud.api.key}, {@code cloud.api.url}
- * и {@code cloud.api.model}.
+ * Сервис для работы с облачным OpenAI‑совместимым API (GPTunnel).
  */
 @Slf4j
 @Service
 public class CloudAiService {
 
-    /** API-ключ облачного провайдера */
     private final String apiKey;
-    /** URL эндпоинта для Chat Completions */
     private final String apiUrl;
-    /** Идентификатор используемой модели (например, {@code deepseek-chat}) */
     private final String model;
-    /** Маппер для работы с JSON */
     private final ObjectMapper objectMapper;
-    /** HTTP-клиент с настройками таймаутов */
     private final CloseableHttpClient httpClient;
 
-    /**
-     * Конструктор, автоматически внедряющий значения из конфигурации.
-     *
-     * @param apiKey  API-ключ облачного провайдера
-     * @param apiUrl  URL эндпоинта Chat Completions
-     * @param model   идентификатор модели
-     */
     public CloudAiService(@Value("${cloud.api.key}") String apiKey,
                           @Value("${cloud.api.url}") String apiUrl,
                           @Value("${cloud.api.model}") String model) {
@@ -55,27 +38,17 @@ public class CloudAiService {
         this.objectMapper = new ObjectMapper();
         this.httpClient = HttpClientBuilder.create()
                 .setDefaultRequestConfig(RequestConfig.custom()
-                        .setConnectTimeout(10_000)   // таймаут на установку соединения
-                        .setSocketTimeout(30_000)    // таймаут на ожидание ответа
+                        .setConnectTimeout(10_000)
+                        .setSocketTimeout(30_000)
                         .build())
                 .build();
     }
 
     /**
-     * Очищает пользовательский запрос от мусорных слов и одновременно
-     * расшифровывает все известные аббревиатуры через облачную LLM.
-     * <p>
-     * Промпт содержит полный перечень аббревиатур, требование удалить
-     * все стоп-слова и временные метки, а также пример ожидаемого ответа.
-     * <p>
-     * Если API недоступно или возвращает пустой ответ, метод возвращает
-     * исходный запрос без изменений — это обеспечивает отказоустойчивость.
-     *
-     * @param userQuery исходный запрос пользователя
-     * @return очищенный и расширенный запрос (знаменательные слова + расшифровки)
+     * Очищает запрос: удаляет стоп‑слова, временные метки и расшифровывает аббревиатуры.
+     * Используется для лексического поиска (стемминга).
      */
     public String cleanAndExpandQuery(String userQuery) {
-        // Промпт, жёстко регламентирующий формат ответа
         String prompt = String.format(
                 "Ты — инструмент очистки поискового запроса. Отвечай ТОЛЬКО на русском языке. " +
                         "Удали ВСЕ предлоги, союзы, частицы, междометия, местоимения, вводные, вопросительные, модальные слова и слова-паразиты. " +
@@ -100,22 +73,54 @@ public class CloudAiService {
 
         try {
             String aiResponse = chat(prompt);
-            if (aiResponse == null || aiResponse.isBlank()) {
-                return userQuery;
-            }
-
-            // Убираем возможные кавычки и переносы строк, приводим к нижнему регистру
-            String cleaned = aiResponse.trim()
-                    .replace("\"", "")
-                    .replace("\n", " ")
-                    .toLowerCase();
-            log.info("Cleaned query: {}", cleaned);
+            if (aiResponse == null || aiResponse.isBlank()) return userQuery;
+            String cleaned = aiResponse.trim().replace("\"", "").replace("\n", " ").toLowerCase();
+            log.info("Cleaned query for stemming: {}", cleaned);
             return cleaned;
         } catch (Exception e) {
-            log.error("Ошибка при очистке запроса через облачное API", e);
-            return userQuery;   // fallback – исходный запрос
+            log.error("Ошибка при очистке запроса", e);
+            return userQuery;
         }
     }
+
+    /**
+     * Расшифровывает аббревиатуры, сохраняя исходные аббревиатуры в тексте.
+     * Используется для семантического (векторного) поиска.
+     * Пример: "Сводка СВО на сегодня" → "Сводка СВО (специальная военная операция) на сегодня"
+     */
+    public String expandAbbreviationsKeepOriginal(String userQuery) {
+        String prompt = String.format(
+                "Перепиши запрос, добавив после каждой аббревиатуры её полную расшифровку в скобках. " +
+                        "Если аббревиатур нет, верни исходный запрос без изменений. Отвечай только переписанным запросом.\n" +
+                        "Запрос: \"%s\"",
+                userQuery
+        );
+
+        try {
+            String aiResponse = chat(prompt);
+            if (aiResponse == null || aiResponse.isBlank()) return userQuery;
+            String rewritten = aiResponse.trim();
+            log.info("Expanded with original abbreviations: {}", rewritten);
+            return rewritten;
+        } catch (Exception e) {
+            log.error("Ошибка при расшифровке аббревиатур", e);
+            return userQuery;
+        }
+    }
+
+    /**
+     * Быстрая проверка доступности API.
+     */
+    public boolean isAvailable() {
+        try {
+            chat("test");
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // Метод chat и embed остаются без изменений, они уже есть в вашем классе
 
     /**
      * Получает эмбеддинг для переданного текста через облачное API.
@@ -155,21 +160,6 @@ public class CloudAiService {
         } catch (IOException e) {
             log.error("Ошибка при получении эмбеддинга через облачное API", e);
             return null;
-        }
-    }
-
-    /**
-     * Быстрая проверка доступности облачного API.
-     * Вызывается при старте бота для информативного логирования.
-     *
-     * @return {@code true}, если API отвечает на тестовый запрос
-     */
-    public boolean isAvailable() {
-        try {
-            chat("test");
-            return true;
-        } catch (Exception e) {
-            return false;
         }
     }
 

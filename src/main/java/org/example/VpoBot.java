@@ -231,17 +231,19 @@ public class VpoBot extends TelegramLongPollingBot {
         }
 
         if (messageText.startsWith("/semantic")) {
-            String query = messageText.substring(10).trim(); // убираем "/semantic"
+            String query = messageText.substring(10).trim();
             if (query.isEmpty()) {
                 sendTextMessage(chatId, "Пожалуйста, напишите запрос после /semantic. Например: /semantic Что происходит в Ормузском проливе");
                 return;
             }
             sendTextMessage(chatId, "⏳ Ищу по смыслу...");
-            List<NewsPost> results = newsStorageService.semanticSearch(query, 5);
+            // Теперь запрос сначала расшифровывается, а потом передаётся в поиск
+            String expandedQuery = cloudAiService.expandAbbreviationsKeepOriginal(query);
+            log.info("Semantic query: {}", expandedQuery);
+            List<NewsPost> results = newsStorageService.semanticSearch(expandedQuery, 5);
             if (results.isEmpty()) {
                 sendTextMessage(chatId, "Ничего не найдено.");
             } else {
-                // Формируем ответ (аналогично sendNewsPage, но без пагинации)
                 StringBuilder sb = new StringBuilder("🔹 Результаты семантического поиска:\n\n");
                 for (int i = 0; i < results.size(); i++) {
                     NewsPost post = results.get(i);
@@ -388,26 +390,26 @@ public class VpoBot extends TelegramLongPollingBot {
      * @return список новостей, отсортированный по релевантности
      */
     private List<NewsPost> hybridSearch(String query, int limit) {
-        // 1. Лексический поиск (стемминг)
-        String cleanedQuery = cloudAiService.cleanAndExpandQuery(query);
-        List<NewsPost> stemResults = parser.searchByStemsRanked(cleanedQuery);
+        // 1. Лексический поиск (стемминг): полная очистка + расшифровка
+        String cleanedForStem = cloudAiService.cleanAndExpandQuery(query);
+        List<NewsPost> stemResults = parser.searchByStemsRanked(cleanedForStem);
 
-        // 2. Векторный (семантический) поиск
-        List<NewsPost> semanticResults = newsStorageService.semanticSearch(query, Math.max(limit, stemResults.size()));
+        // 2. Векторный поиск: только расшифровка аббревиатур с сохранением исходных
+        String expandedForVector = cloudAiService.expandAbbreviationsKeepOriginal(query);
+        List<NewsPost> semanticResults = newsStorageService.semanticSearch(expandedForVector,
+                Math.max(limit, stemResults.size()));
 
         // 3. Слияние через Reciprocal Rank Fusion
         Map<String, Double> rrfScores = new HashMap<>();
-        Map<String, NewsPost> newsByLink = new LinkedHashMap<>(); // сохраняем порядок для уникальности
+        Map<String, NewsPost> newsByLink = new LinkedHashMap<>();
 
-        // Добавляем результаты стемминга с позиционными скорами
         for (int i = 0; i < stemResults.size(); i++) {
             String link = stemResults.get(i).getLink();
-            double rrf = 1.0 / (60 + i + 1);   // k=60, rank starts from 1
+            double rrf = 1.0 / (60 + i + 1);
             rrfScores.merge(link, rrf, Double::sum);
             newsByLink.putIfAbsent(link, stemResults.get(i));
         }
 
-        // Добавляем результаты векторного поиска
         for (int i = 0; i < semanticResults.size(); i++) {
             String link = semanticResults.get(i).getLink();
             double rrf = 1.0 / (60 + i + 1);
@@ -415,7 +417,6 @@ public class VpoBot extends TelegramLongPollingBot {
             newsByLink.putIfAbsent(link, semanticResults.get(i));
         }
 
-        // Сортируем по убыванию RRF-скора и возвращаем топ-N
         return rrfScores.entrySet().stream()
                 .sorted(Map.Entry.<String, Double>comparingByValue().reversed())
                 .limit(limit)
